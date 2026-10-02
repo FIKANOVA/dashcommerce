@@ -5,8 +5,8 @@
  * "stripe" for backwards compatibility.
  */
 
-import type { PaymentProvider } from "./types";
 import { stripePaymentProvider } from "./stripe-provider";
+import type { PaymentProvider } from "./types";
 
 export type PaymentProviderId = "stripe" | "paystack" | "mock" | string;
 

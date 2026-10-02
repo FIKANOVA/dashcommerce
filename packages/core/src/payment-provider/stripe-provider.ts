@@ -7,6 +7,15 @@
  */
 
 import type { PluginContext } from "emdash";
+import {
+	type CheckoutLineItem,
+	type StripeCheckoutSession,
+	createCheckoutSession,
+} from "../stripe/checkout-sessions";
+import type { StripeClientOptions } from "../stripe/client";
+import type { StripePaymentIntent } from "../stripe/payment-intents";
+import { createRefund as stripeCreateRefund } from "../stripe/refunds";
+import { verifyStripeSignature } from "../stripe/webhook-verify";
 import type {
 	CreateRefundInput,
 	InitCheckoutInput,
@@ -20,15 +29,6 @@ import type {
 	VerifyWebhookInput,
 	VerifyWebhookResult,
 } from "./types";
-import {
-	createCheckoutSession,
-	type CheckoutLineItem,
-	type StripeCheckoutSession,
-} from "../stripe/checkout-sessions";
-import { verifyStripeSignature } from "../stripe/webhook-verify";
-import { createRefund as stripeCreateRefund } from "../stripe/refunds";
-import type { StripeClientOptions } from "../stripe/client";
-import type { StripePaymentIntent } from "../stripe/payment-intents";
 
 function toStripeClient(credentials: PaymentProviderCredentials): StripeClientOptions {
 	return { secretKey: credentials.secretKey };
@@ -107,8 +107,7 @@ export const stripePaymentProvider: PaymentProvider = {
 						}
 					: {}),
 				...(stripeOpts?.automaticTax ? { automaticTax: true } : {}),
-				...(stripeOpts?.subscriptionTrialPeriodDays &&
-				stripeOpts.subscriptionTrialPeriodDays > 0
+				...(stripeOpts?.subscriptionTrialPeriodDays && stripeOpts.subscriptionTrialPeriodDays > 0
 					? { subscriptionTrialPeriodDays: stripeOpts.subscriptionTrialPeriodDays }
 					: {}),
 				...(stripeOpts?.subscriptionMetadata
@@ -126,8 +125,7 @@ export const stripePaymentProvider: PaymentProvider = {
 								: {}),
 							...(stripeOpts?.applicationFeeAmount !== undefined
 								? {
-										paymentIntentApplicationFeeAmount:
-											stripeOpts.applicationFeeAmount,
+										paymentIntentApplicationFeeAmount: stripeOpts.applicationFeeAmount,
 									}
 								: {}),
 						}
@@ -264,8 +262,7 @@ export const stripePaymentProvider: PaymentProvider = {
 				eventIdSource,
 				checkoutReference: pi.metadata?.sessionId,
 				paymentReference: pi.id,
-				reason: (pi as { last_payment_error?: { message?: string } })
-					.last_payment_error?.message,
+				reason: (pi as { last_payment_error?: { message?: string } }).last_payment_error?.message,
 				raw: event,
 				providerReference: pi.id,
 			};

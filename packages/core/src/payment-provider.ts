@@ -38,3 +38,8 @@ export {
 	type RegisterProviderOptions,
 } from "./payment-provider/registry";
 export { toPaymentProviderRuntimeContext } from "./payment-provider/runtime";
+export {
+	reconcilePaymentAttempt,
+	type ReconcileAttemptInput,
+	type ReconcileAttemptResult,
+} from "./payment-provider/reconcile";

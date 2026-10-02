@@ -27,6 +27,7 @@ import { clear as clearCart } from "../cart/store";
 import {
 	createOrderFromPaymentIntent,
 	findOrderByPaymentIntent,
+	findOrderByOrderDraftId,
 } from "../orders/create";
 import { recordRefundFromWebhook } from "../orders/refund";
 import { verifyStripeSignature } from "../stripe/webhook-verify";
@@ -593,6 +594,15 @@ async function handleNormalizedChargeSucceeded(
 		});
 	}
 
+	// Idempotent on orderDraftId (late webhook after draft cleanup)
+	const existingByDraft = await findOrderByOrderDraftId(ctx, orderDraftId);
+	if (existingByDraft) {
+		return new Response(JSON.stringify({ received: true, duplicate: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
 	const snapshot = await ctx.kv.get<CheckoutDraftSnapshot>(draftKey(orderDraftId));
 	if (!snapshot) {
 		ctx.log.error("No cart snapshot for orderDraftId", {
@@ -886,7 +896,7 @@ export const webhookRoutes = {
 				req.headers.get("signature") ??
 				"";
 
-			if (!sigHeader && provider.id !== "mock") {
+			if (!sigHeader && !provider.id.includes("mock")) {
 				return new Response(JSON.stringify({ error: `Missing ${provider.id} signature header` }), {
 					status: 400,
 					headers: { "Content-Type": "application/json" },
@@ -895,9 +905,9 @@ export const webhookRoutes = {
 
 			const creds = await loadProviderCredentials(ctx, provider.id);
 			const secret = creds.webhookSecret ?? creds.secretKey;
-			const effectiveSecret = secret || (provider.id === "mock" ? "test-secret" : "");
+			const effectiveSecret = secret || (provider.id.includes("mock") ? "test-secret" : "");
 
-			if (!effectiveSecret && provider.id !== "mock") {
+			if (!effectiveSecret && !provider.id.includes("mock")) {
 				return new Response(JSON.stringify({ error: "Webhook secret not configured" }), {
 					status: 500,
 					headers: { "Content-Type": "application/json" },

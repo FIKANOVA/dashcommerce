@@ -1,6 +1,6 @@
+import assert from "node:assert/strict";
 // mock-provider.test.ts
 import { test } from "node:test";
-import assert from "node:assert/strict";
 import { createMockPaymentProvider } from "./mock-provider";
 import type { PaymentProviderCredentials, PaymentProviderRuntimeContext } from "./types";
 
@@ -50,10 +50,7 @@ test("mock: initCheckout succeeds by default, separates references, and formats 
 		creds,
 	);
 	if (res2.kind === "redirect") {
-		assert.equal(
-			res2.redirectUrl,
-			"https://example.com/thank-you?existing=val&num=1&mock=1",
-		);
+		assert.equal(res2.redirectUrl, "https://example.com/thank-you?existing=val&num=1&mock=1");
 	}
 
 	// Test 3: URL with fragment/hash

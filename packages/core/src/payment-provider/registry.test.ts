@@ -1,14 +1,14 @@
-// registry.test.ts
-import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+// registry.test.ts
+import { test } from "node:test";
+import { createMockPaymentProvider } from "./mock-provider";
 import {
-	registerPaymentProvider,
 	getPaymentProvider,
 	listPaymentProviders,
-	resolveProvider,
+	registerPaymentProvider,
 	resetPaymentProviders,
+	resolveProvider,
 } from "./registry";
-import { createMockPaymentProvider } from "./mock-provider";
 import { stripePaymentProvider } from "./stripe-provider";
 import type { PaymentProvider } from "./types";
 
@@ -51,9 +51,7 @@ test("registry: rejects duplicate provider registration unless override is expli
 		...createMockPaymentProvider(),
 		label: "Mock Replacement",
 	};
-	assert.doesNotThrow(() =>
-		registerPaymentProvider(mockReplacement, { override: true }),
-	);
+	assert.doesNotThrow(() => registerPaymentProvider(mockReplacement, { override: true }));
 	assert.equal(getPaymentProvider("mock")?.label, "Mock Replacement");
 });
 

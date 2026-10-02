@@ -1,6 +1,6 @@
+import assert from "node:assert/strict";
 // stripe-provider.test.ts — verifies StripePaymentProvider adapter logic
 import { test } from "node:test";
-import assert from "node:assert/strict";
 import { stripePaymentProvider } from "./stripe-provider";
 import type { PaymentProviderCredentials, PaymentProviderRuntimeContext } from "./types";
 
@@ -106,7 +106,12 @@ test("parseWebhookEvent: digital cart with billingAddress only falls back to shi
 				metadata: { orderDraftId: "draft_digital" },
 				customer_details: {
 					email: "digital@example.com",
-					address: { line1: "789 Digital St", city: "Mombasa", country: "KE", postal_code: "80100" },
+					address: {
+						line1: "789 Digital St",
+						city: "Mombasa",
+						country: "KE",
+						postal_code: "80100",
+					},
 				},
 			},
 		},
@@ -115,7 +120,11 @@ test("parseWebhookEvent: digital cart with billingAddress only falls back to shi
 	assert.equal(event.type, "charge.succeeded");
 	if (event.type === "charge.succeeded") {
 		assert.equal(event.billingAddress?.line1, "789 Digital St");
-		assert.equal(event.shippingAddress?.line1, "789 Digital St", "Shipping must fall back to billing for digital cart");
+		assert.equal(
+			event.shippingAddress?.line1,
+			"789 Digital St",
+			"Shipping must fall back to billing for digital cart",
+		);
 	}
 });
 
@@ -215,9 +224,7 @@ test("initCheckout: passes Stripe checkout options and returns redirect result",
 			],
 			successUrl: "https://example.com/thank-you",
 			cancelUrl: "https://example.com/checkout",
-			shippingOptions: [
-				{ id: "std", label: "Standard Shipping", amount: 500, currency: "USD" },
-			],
+			shippingOptions: [{ id: "std", label: "Standard Shipping", amount: 500, currency: "USD" }],
 			allowedShippingCountries: ["KE", "US"],
 			providerOptions: {
 				stripe: {
@@ -276,8 +283,5 @@ test("formatAmount: renders major units with currency code", () => {
 		stripePaymentProvider.formatAmount({ amount: 150000, currency: "kes" }),
 		"KES 1500.00",
 	);
-	assert.equal(
-		stripePaymentProvider.formatAmount({ amount: 999, currency: "USD" }),
-		"USD 9.99",
-	);
+	assert.equal(stripePaymentProvider.formatAmount({ amount: 999, currency: "USD" }), "USD 9.99");
 });

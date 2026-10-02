@@ -247,6 +247,19 @@ export interface PaymentProvider {
 
 	/** Format a minor-units amount for display. */
 	formatAmount(money: Money): string;
+
+	/** Verify payment status directly with the provider (for asynchronous polling or reconciliation). */
+	getPaymentStatus?(
+		ctx: PaymentProviderRuntimeContext,
+		paymentOrCheckoutReference: string,
+		credentials: PaymentProviderCredentials,
+	): Promise<{
+		status: "pending" | "succeeded" | "failed";
+		paymentReference?: string;
+		amount?: number;
+		currency?: string;
+		reason?: string;
+	}>;
 }
 
 /** The subset of PluginContext a PaymentProvider implementation may use. */

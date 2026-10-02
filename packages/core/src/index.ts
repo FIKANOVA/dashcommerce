@@ -195,6 +195,7 @@ export type {
 	Customer,
 	CustomerAddress,
 	CurrencyCode,
+	DeviceStockAllocation,
 	DiscountType,
 	DownloadableFile,
 	DownloadGrant,
@@ -203,8 +204,10 @@ export type {
 	IsoDateTime,
 	Money,
 	Order,
+	OrderFulfilment,
 	OrderItem,
 	OrderStatus,
+	OrderTenderLine,
 	PaymentStatus,
 	PriceEntry,
 	PriceMap,
@@ -234,6 +237,7 @@ export type {
 	TaxRate,
 	Vendor,
 	VendorPayout,
+	TenderType,
 	VendorSplit,
 } from "./types";
 
@@ -258,5 +262,19 @@ export {
 	ZERO_DECIMAL_CURRENCIES,
 	zero,
 } from "./money";
+
+export { validateTenderLines, type TenderValidationResult } from "./pos/tender";
+export {
+	allocateStock,
+	reconcileAllocation,
+	type AllocateStockInput,
+	type ReconcileAllocationInput,
+} from "./pos/allocation";
+export { fulfillOrder, type FulfillOrderInput } from "./orders/fulfilment";
+export {
+	reconcilePaymentAttempt,
+	type ReconcileAttemptInput,
+	type ReconcileAttemptResult,
+} from "./payment-provider/reconcile";
 
 export default dashcommerce;

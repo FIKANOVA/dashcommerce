@@ -240,6 +240,7 @@ export interface Order {
 	providerId?: string;
 	paymentReference?: string;
 	checkoutReference?: string;
+	tenders?: OrderTenderLine[];
 	stripeCustomerId?: string;
 	stripeChargeId?: string;
 	paymentMethodType?: string; // card, link, applepay, …
@@ -290,6 +291,49 @@ export interface Refund {
 	restocked: boolean;
 	createdAt: IsoDateTime;
 	createdByUserId?: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Point of Sale (POS) & Fulfilment Boundaries
+// ────────────────────────────────────────────────────────────────────────────
+
+export type TenderType = "cash" | "mpesa_stk" | "mpesa_qr" | "card_terminal" | "split";
+
+export interface OrderTenderLine {
+	id: string;
+	type: TenderType;
+	amount: Money;
+	status: "pending" | "completed" | "failed";
+	reference?: string;
+	operatorId?: string;
+	deviceId?: string;
+	createdAt: IsoDateTime;
+}
+
+export interface DeviceStockAllocation {
+	id: string;
+	deviceId: string;
+	merchantId?: string;
+	productId: string;
+	variantId?: string;
+	allocatedQuantity: number;
+	soldQuantity: number;
+	status: "active" | "reconciled" | "expired";
+	expiresAt: IsoDateTime;
+	createdAt: IsoDateTime;
+	updatedAt: IsoDateTime;
+}
+
+export interface OrderFulfilment {
+	id: string;
+	orderId: string;
+	idempotencyKey: string;
+	status: "pending" | "fulfilled" | "failed";
+	trackingNumber?: string;
+	carrier?: string;
+	items: Array<{ orderItemId: string; quantity: number }>;
+	metadata?: Record<string, unknown>;
+	createdAt: IsoDateTime;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

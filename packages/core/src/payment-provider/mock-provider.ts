@@ -32,6 +32,10 @@ export interface MockPaymentProviderOptions {
 	failVerifyWebhook?: boolean;
 	/** Force async pending checkout mode instead of hosted redirect. */
 	asyncPendingCheckout?: boolean;
+	/** Force getPaymentStatus to report failure. */
+	failPaymentStatus?: boolean;
+	/** Force getPaymentStatus to report success. */
+	succeedPaymentStatus?: boolean;
 }
 
 export function createMockPaymentProvider(
@@ -104,8 +108,8 @@ export function createMockPaymentProvider(
 				amount?: number;
 				currency?: string;
 				email?: string;
-				shippingAddress?: any;
-				billingAddress?: any;
+				shippingAddress?: PaymentProviderAddress;
+				billingAddress?: PaymentProviderAddress;
 			};
 			try {
 				event = JSON.parse(rawBody);
@@ -191,6 +195,21 @@ export function createMockPaymentProvider(
 
 		formatAmount(money: Money): string {
 			return `${money.currency.toUpperCase()} ${(money.amount / 100).toFixed(2)}`;
+		},
+
+		async getPaymentStatus(_ctx, reference, _credentials) {
+			if (options.failPaymentStatus) {
+				return { status: "failed", reason: "Mock forced payment status failure" };
+			}
+			if (options.succeedPaymentStatus) {
+				return {
+					status: "succeeded",
+					paymentReference: `pay_reconciled_${reference}`,
+					amount: 5000,
+					currency: "USD",
+				};
+			}
+			return { status: "pending" };
 		},
 	};
 }
