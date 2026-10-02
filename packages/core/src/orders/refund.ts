@@ -6,28 +6,30 @@
  *        ▼
  *   refundOrder()
  *        │
- *        ├─→ createRefund (Stripe API, idempotency-keyed)
+ *        ├─→ PaymentProvider.refund (idempotency-keyed with refundRequestId)
  *        ├─→ refunds.put (unique-indexed on stripeRefundId)
  *        ├─→ inventory.restore (when lineItemRefunds + restock)
  *        ├─→ order.status / paymentStatus / refundedTotal update
  *        └─→ refund email
  *
- * The function is idempotent *if the caller supplies a stable
- * `idempotencyKey`* — typically `refund:{orderId}:{stripeRefundId|uuid}`.
- * For webhook-driven paths (charge.refunded) we can safely short-circuit
- * on the unique-index conflict against `stripeRefundId`.
+ * The function is idempotent with same-key/same-payload semantics:
+ * replaying with the same refundRequestId and amount returns the prior result,
+ * while conflicting payloads throw an error.
  */
 
 import type { PluginContext, StorageCollection } from "emdash";
 import { randomId } from "../util/ids";
 import { add, CurrencyMismatchError, type Money } from "../money";
-import { createRefund, type StripeRefund } from "../stripe/refunds";
 import type { StripeClientOptions } from "../stripe/client";
 import type { Order, OrderItem, Refund } from "../types";
 import { loadOrder, loadOrderItems, refundsStore } from "./create";
 import { derivePaymentStatus, deriveOrderStatusFromRefunds } from "./status";
 import { restoreForOrderItem } from "../inventory/restore";
 import { sendRefundReceipt } from "./receipt";
+import { getPaymentProvider } from "../payment-provider/registry";
+import { stripePaymentProvider } from "../payment-provider/stripe-provider";
+import type { PaymentProviderCredentials } from "../payment-provider/types";
+import { toPaymentProviderRuntimeContext } from "../payment-provider/runtime";
 
 type OrdersStore = StorageCollection<Order>;
 function ordersStore(ctx: PluginContext): OrdersStore {
@@ -47,10 +49,29 @@ export interface RefundOrderInput {
 	lineItemRefunds?: LineItemRefund[];
 	restock?: boolean;
 	createdByUserId?: string;
-	/** Stripe client creds (read from KV by caller). */
-	client: StripeClientOptions;
-	/** Stable key for Stripe idempotency. */
+	/** Optional provider client credentials (loaded from KV by default). */
+	client?: StripeClientOptions;
+	/** Stable operation ID for refund idempotency. */
 	idempotencyKey: string;
+}
+
+async function loadProviderCredentials(
+	ctx: PluginContext,
+	providerId: string,
+	clientOverride?: StripeClientOptions,
+): Promise<PaymentProviderCredentials> {
+	if (clientOverride?.secretKey) {
+		return { secretKey: clientOverride.secretKey };
+	}
+	if (providerId === "stripe") {
+		const secret = (await ctx.kv.get<string>("settings:stripeSecretKey")) ?? "";
+		return { secretKey: secret };
+	}
+	const secret =
+		(await ctx.kv.get<string>(`settings:${providerId}SecretKey`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderSecretKey")) ??
+		"";
+	return { secretKey: secret };
 }
 
 export async function refundOrder(
@@ -73,8 +94,44 @@ export async function refundOrder(
 		);
 	}
 
-	// Stripe call first — if this fails, we don't write anything.
-	const stripeRefund = await stripeRefundWithDedup(ctx, order, input);
+	// Idempotency check: see if a refund with this refundRequestId/idempotencyKey was already recorded
+	// for this order, enforcing same-key/same-payload idempotency.
+	const existingRefunds = await refundsStore(ctx).query({
+		where: { orderId: order.id },
+	});
+	const prior = existingRefunds.items.find(
+		(r) => (r.data as Refund).refundRequestId === input.idempotencyKey,
+	);
+	if (prior) {
+		const priorRefund = { ...(prior.data as Refund), id: prior.id };
+		if (
+			priorRefund.amount.amount === input.amount.amount &&
+			priorRefund.amount.currency === input.amount.currency
+		) {
+			return priorRefund; // Replay idempotency: exact match returns prior result
+		}
+		throw new Error(
+			`Conflict: refund with idempotencyKey "${input.idempotencyKey}" already processed with amount ${priorRefund.amount.currency} ${priorRefund.amount.amount}, requested ${input.amount.currency} ${input.amount.amount}`,
+		);
+	}
+
+	// Route refund call through registered PaymentProvider
+	const providerId = (order.providerId ?? (order.metadata?.providerId as string)) ?? "stripe";
+	const provider = getPaymentProvider(providerId) ?? stripePaymentProvider;
+	const creds = await loadProviderCredentials(ctx, provider.id, input.client);
+
+	const targetPaymentReference = order.paymentReference ?? order.stripePaymentIntentId;
+	const refundResult = await provider.refund(
+		toPaymentProviderRuntimeContext(ctx),
+		{
+			paymentReference: targetPaymentReference,
+			refundRequestId: input.idempotencyKey,
+			amount: input.amount.amount,
+			currency: input.amount.currency,
+			reason: input.reason,
+		},
+		creds,
+	);
 
 	// Persist refund row (unique-indexed on stripeRefundId).
 	const refundId = randomId();
@@ -83,13 +140,10 @@ export async function refundOrder(
 		orderId: order.id,
 		amount: input.amount,
 		...(input.reason ? { reason: input.reason } : {}),
-		status:
-			stripeRefund.status === "succeeded"
-				? "succeeded"
-				: stripeRefund.status === "failed"
-					? "failed"
-					: "pending",
-		stripeRefundId: stripeRefund.id,
+		status: refundResult.status,
+		stripeRefundId: refundResult.providerRefundId,
+		providerId: provider.id,
+		refundRequestId: input.idempotencyKey,
 		...(input.lineItemRefunds ? { lineItemRefunds: input.lineItemRefunds } : {}),
 		restocked: Boolean(input.restock),
 		createdAt: new Date().toISOString(),
@@ -110,11 +164,10 @@ export async function refundOrder(
 					orderItem,
 					quantity: li.quantity,
 					reason: "refund",
-					refundId: refund.id,
 				});
 			} catch (err) {
-				ctx.log.warn("Stock restore failed during refund", {
-					refundId: refund.id,
+				ctx.log.error("Restock failed for orderItem during refund", {
+					orderId: order.id,
 					orderItemId: li.orderItemId,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -122,7 +175,7 @@ export async function refundOrder(
 		}
 	}
 
-	// Update order totals + status.
+	// Update order totals and status.
 	const newRefundedTotal = add(order.refundedTotal, input.amount);
 	const paymentStatus = derivePaymentStatus(
 		order.paidTotal.amount,
@@ -149,35 +202,6 @@ export async function refundOrder(
 }
 
 /**
- * Call Stripe and guard against webhook-driven double-refund. Checks
- * refunds collection for an existing row matching stripeRefundId before
- * any new API call. Stripe's own Idempotency-Key protects against retry
- * races.
- */
-async function stripeRefundWithDedup(
-	ctx: PluginContext,
-	order: Order,
-	input: RefundOrderInput,
-): Promise<StripeRefund> {
-	return createRefund(
-		ctx,
-		{
-			paymentIntent: order.stripePaymentIntentId,
-			amount: input.amount.amount,
-			reason:
-				input.reason === "fraudulent" ||
-				input.reason === "duplicate" ||
-				input.reason === "requested_by_customer"
-					? input.reason
-					: "requested_by_customer",
-			metadata: { orderId: order.id, orderNumber: order.orderNumber },
-		},
-		input.client,
-		input.idempotencyKey,
-	);
-}
-
-/**
  * Webhook-driven refund path: we already received the Stripe Refund object
  * from `charge.refunded`. Persist it, do the restock/update, but skip the
  * Stripe API call.
@@ -185,7 +209,7 @@ async function stripeRefundWithDedup(
 export async function recordRefundFromWebhook(
 	ctx: PluginContext,
 	order: Order,
-	stripeRefund: StripeRefund,
+	stripeRefund: { id: string; amount: number; currency: string; reason?: string; status: string },
 ): Promise<Refund | null> {
 	// Dedup on stripeRefundId.
 	const existingRow = await refundsStore(ctx).query({
@@ -220,6 +244,7 @@ export async function recordRefundFromWebhook(
 					? "failed"
 					: "pending",
 		stripeRefundId: stripeRefund.id,
+		providerId: (order.providerId ?? (order.metadata?.providerId as string)) ?? "stripe",
 		restocked: false,
 		createdAt: new Date().toISOString(),
 	};

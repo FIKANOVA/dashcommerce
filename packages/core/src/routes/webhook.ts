@@ -40,7 +40,7 @@ import type { StripeClientOptions } from "../stripe/client";
 import type { StripeRefund } from "../stripe/refunds";
 import type { StripeAccount, StripePayout } from "../stripe/connect";
 import type { StripeInvoice, StripeSubscription } from "../stripe/subscriptions";
-import type { Address, CountryCode, Customer } from "../types";
+import type { Address, CountryCode, Customer, Order } from "../types";
 import {
 	findVendorByStripeAccountId,
 	upsertVendorFromStripeAccount,
@@ -59,6 +59,8 @@ import {
 	sendVendorPayout,
 } from "../emails";
 import { draftKey, type CheckoutDraftSnapshot } from "./checkout";
+import { getPaymentProvider, resolveProvider } from "../payment-provider/registry";
+import type { NormalizedPaymentEvent } from "../payment-provider/types";
 
 type StripeEventsStore = StorageCollection<StripeEventRecord>;
 function stripeEventsStore(ctx: PluginContext): StripeEventsStore {
@@ -547,22 +549,355 @@ async function readRawBody(req: Request): Promise<string> {
 	return req.text();
 }
 
+async function loadProviderCredentials(
+	ctx: PluginContext,
+	providerId: string,
+): Promise<{ secretKey: string; webhookSecret?: string }> {
+	if (providerId === "stripe") {
+		const secretKey = (await ctx.kv.get<string>("settings:stripeSecretKey")) ?? "";
+		const webhookSecret = (await ctx.kv.get<string>("settings:stripeWebhookSecret")) ?? undefined;
+		return { secretKey, webhookSecret };
+	}
+	const secretKey =
+		(await ctx.kv.get<string>(`settings:${providerId}SecretKey`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderSecretKey")) ??
+		"";
+	const webhookSecret =
+		(await ctx.kv.get<string>(`settings:${providerId}WebhookSecret`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderWebhookSecret")) ??
+		undefined;
+	return { secretKey, webhookSecret };
+}
+
+async function handleNormalizedChargeSucceeded(
+	ctx: PluginContext,
+	event: Extract<NormalizedPaymentEvent, { type: "charge.succeeded" }>,
+): Promise<Response> {
+	const orderDraftId = event.orderDraftId;
+	if (!orderDraftId) {
+		ctx.log.warn("charge.succeeded missing orderDraftId", {
+			paymentReference: event.paymentReference,
+		});
+		return new Response(JSON.stringify({ received: true, skipped: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	// Idempotent on paymentReference
+	const existing = await findOrderByPaymentIntent(ctx, event.paymentReference);
+	if (existing) {
+		return new Response(JSON.stringify({ received: true, duplicate: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const snapshot = await ctx.kv.get<CheckoutDraftSnapshot>(draftKey(orderDraftId));
+	if (!snapshot) {
+		ctx.log.error("No cart snapshot for orderDraftId", {
+			orderDraftId,
+			paymentReference: event.paymentReference,
+		});
+		return new Response(JSON.stringify({ error: "Missing draft snapshot" }), {
+			status: 500,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	const shippingAddr = event.shippingAddress;
+	const billingAddr = event.billingAddress;
+
+	const cart: CartState = {
+		...snapshot.cart,
+		...(event.customer.email ? { customerEmail: event.customer.email } : {}),
+		...(shippingAddr ? { shippingAddress: shippingAddr as any } : {}),
+		...(billingAddr
+			? { billingAddress: billingAddr as any }
+			: shippingAddr
+				? { billingAddress: shippingAddr as any }
+				: {}),
+	};
+
+	if (!cart.billingAddress || !cart.shippingAddress) {
+		if (cart.billingAddress && !cart.shippingAddress) {
+			cart.shippingAddress = cart.billingAddress;
+		} else if (cart.shippingAddress && !cart.billingAddress) {
+			cart.billingAddress = cart.shippingAddress;
+		}
+	}
+
+	const syntheticPi: StripePaymentIntent = {
+		id: event.paymentReference,
+		amount: event.amount,
+		amount_received: event.amount,
+		currency: event.currency.toLowerCase(),
+		status: "succeeded",
+		receipt_email: event.customer.email,
+		metadata: {
+			orderDraftId,
+			providerId: event.providerId,
+			checkoutReference: event.checkoutReference ?? "",
+		},
+	};
+
+	const { order, duplicate } = await createOrderFromPaymentIntent(ctx, {
+		paymentIntent: syntheticPi,
+		cartSnapshot: cart,
+		orderDraftId,
+	});
+
+	if (duplicate) {
+		return new Response(JSON.stringify({ received: true, duplicate: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	// Update order with provider details
+	const orders = (ctx.storage as unknown as { orders: StorageCollection<Order> }).orders;
+	await orders.put(order.id, {
+		...order,
+		providerId: event.providerId,
+		paymentReference: event.paymentReference,
+		checkoutReference: event.checkoutReference,
+		paymentMethodType: event.channel ?? order.paymentMethodType,
+	});
+
+	// Cleanup draft and stock lock
+	await ctx.kv.delete(draftKey(orderDraftId));
+	const lock = await getLock(ctx, orderDraftId);
+	if (lock) await deleteLock(ctx, orderDraftId);
+	await clearCart(ctx, cart.sessionId);
+
+	return new Response(JSON.stringify({ received: true, orderId: order.id }), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+async function handleNormalizedChargeFailed(
+	ctx: PluginContext,
+	event: Extract<NormalizedPaymentEvent, { type: "charge.failed" }>,
+): Promise<Response> {
+	if (event.orderDraftId) {
+		const lock = await getLock(ctx, event.orderDraftId);
+		if (lock) await deleteLock(ctx, event.orderDraftId);
+	}
+	ctx.log.warn("Payment charge failed", {
+		orderDraftId: event.orderDraftId,
+		paymentReference: event.paymentReference,
+		reason: event.reason,
+	});
+	return new Response(JSON.stringify({ received: true, failed: true }), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+async function dispatchStripeSpecificEvent(
+	ctx: PluginContext,
+	event: { id: string; type: string; data: { object: unknown } },
+): Promise<Response> {
+	switch (event.type) {
+		case "payment_intent.succeeded":
+			return await handlePaymentIntentSucceeded(
+				ctx,
+				event.data.object as StripePaymentIntent,
+			);
+		case "payment_intent.payment_failed":
+		case "payment_intent.canceled":
+			return await handlePaymentIntentFailure(
+				ctx,
+				event.data.object as StripePaymentIntent,
+			);
+		case "checkout.session.completed":
+			return await handleCheckoutSessionCompleted(
+				ctx,
+				event.data.object as StripeCheckoutSession,
+			);
+		case "checkout.session.async_payment_failed":
+		case "checkout.session.expired":
+			return await handleCheckoutSessionTerminated(
+				ctx,
+				event.data.object as StripeCheckoutSession,
+			);
+		case "charge.refunded":
+			return await handleChargeRefunded(
+				ctx,
+				event.data.object as StripeCharge,
+			);
+		case "customer.subscription.created":
+		case "customer.subscription.updated":
+		case "customer.subscription.resumed":
+		case "customer.subscription.paused":
+			await upsertFromStripe(
+				ctx,
+				event.data.object as StripeSubscription,
+			);
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		case "customer.subscription.deleted": {
+			const sub = event.data.object as StripeSubscription;
+			const local = await findSubscription(ctx, sub.id);
+			if (local) {
+				await subsStore(ctx).put(local.id, {
+					...local,
+					status: "canceled",
+					canceledAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
+				});
+			}
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		case "invoice.payment_succeeded":
+		case "invoice.paid": {
+			const stripeInvoice = event.data.object as StripeInvoice;
+			const invoiceRecord = await upsertInvoiceFromStripe(
+				ctx,
+				stripeInvoice,
+			);
+			if (
+				invoiceRecord &&
+				stripeInvoice.billing_reason === "subscription_cycle"
+			) {
+				await sendSubscriptionRenewedEmail(ctx, invoiceRecord);
+			}
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		case "invoice.payment_failed":
+			await handleInvoicePaymentFailed(
+				ctx,
+				event.data.object as StripeInvoice,
+			);
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		case "account.updated": {
+			const account = event.data.object as StripeAccount;
+			const previous =
+				await findVendorByStripeAccountId(ctx, account.id);
+			const wasActive =
+				previous?.onboardingStatus === "active" &&
+				previous.chargesEnabled === true;
+			const vendor = await upsertVendorFromStripeAccount(
+				ctx,
+				account,
+			);
+			if (vendor && !wasActive && vendor.chargesEnabled) {
+				await sendVendorActivated(
+					ctx,
+					vendor,
+					ctx.url("/vendor/dashboard"),
+				);
+			}
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		case "payout.paid":
+		case "payout.failed":
+		case "payout.canceled":
+		case "payout.updated": {
+			const payout = event.data.object as StripePayout;
+			const acctRaw = (event as unknown as { account?: string }).account;
+			if (!acctRaw) {
+				ctx.log.warn("payout.* missing event.account field", {
+					payoutId: payout.id,
+				});
+				return new Response(JSON.stringify({ received: true, skipped: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const payoutRecord = await recordPayoutFromStripe(
+				ctx,
+				acctRaw,
+				payout,
+			);
+			if (payoutRecord && event.type === "payout.paid") {
+				const vendor = await findVendorByStripeAccountId(
+					ctx,
+					acctRaw,
+				);
+				if (vendor) {
+					await sendVendorPayout(
+						ctx,
+						vendor,
+						payoutRecord,
+						ctx.url("/vendor/dashboard"),
+					);
+				}
+			}
+			return new Response(JSON.stringify({ received: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		default:
+			return new Response(
+				JSON.stringify({ received: true, type: event.type, skipped: true }),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+	}
+}
+
 export const webhookRoutes = {
 	"checkout/webhook": {
 		public: true,
 		handler: async (routeCtx: RouteContext, _ctx?: PluginContext) => {
 			const ctx = (_ctx ?? (routeCtx as unknown as PluginContext)) as PluginContext;
 			const req = routeCtx.request;
-			const sigHeader = req.headers.get("stripe-signature");
-			if (!sigHeader) {
-				return new Response(JSON.stringify({ error: "Missing Stripe-Signature" }), {
+
+			let providerId: string | null = null;
+			try {
+				const url = new URL(req.url);
+				if (url.searchParams.has("provider")) {
+					providerId = url.searchParams.get("provider");
+				}
+			} catch {}
+
+			if (!providerId) {
+				if (req.headers.has("stripe-signature")) {
+					providerId = "stripe";
+				} else if (req.headers.has("x-paystack-signature")) {
+					providerId = "paystack";
+				} else {
+					providerId = (await ctx.kv.get<string>("settings:paymentProvider")) ?? "stripe";
+				}
+			}
+
+			const provider = getPaymentProvider(providerId) ?? (await resolveProvider(ctx.kv));
+
+			const sigHeader =
+				req.headers.get("stripe-signature") ??
+				req.headers.get("x-paystack-signature") ??
+				req.headers.get("x-webhook-signature") ??
+				req.headers.get("signature") ??
+				"";
+
+			if (!sigHeader && provider.id !== "mock") {
+				return new Response(JSON.stringify({ error: `Missing ${provider.id} signature header` }), {
 					status: 400,
 					headers: { "Content-Type": "application/json" },
 				});
 			}
 
-			const secret = await ctx.kv.get<string>("settings:stripeWebhookSecret");
-			if (!secret) {
+			const creds = await loadProviderCredentials(ctx, provider.id);
+			const secret = creds.webhookSecret ?? creds.secretKey;
+			const effectiveSecret = secret || (provider.id === "mock" ? "test-secret" : "");
+
+			if (!effectiveSecret && provider.id !== "mock") {
 				return new Response(JSON.stringify({ error: "Webhook secret not configured" }), {
 					status: 500,
 					headers: { "Content-Type": "application/json" },
@@ -570,40 +905,31 @@ export const webhookRoutes = {
 			}
 
 			const payload = await readRawBody(req);
-			const verified = await verifyStripeSignature({
-				payload,
+			const verified = await provider.verifyWebhook({
+				rawBody: payload,
 				signatureHeader: sigHeader,
-				secret,
+				secret: effectiveSecret,
 			});
 			if (!verified.ok) {
-				ctx.log.warn("Stripe webhook signature invalid", { reason: verified.reason });
+				ctx.log.warn(`Webhook signature invalid for provider "${provider.id}"`, {
+					reason: verified.reason,
+				});
 				return new Response(
 					JSON.stringify({ error: `Invalid signature: ${verified.reason}` }),
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
 			}
 
-			let event: {
-				id: string;
-				type: string;
-				data: { object: unknown };
-			};
-			try {
-				event = JSON.parse(payload);
-			} catch {
-				return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				});
-			}
+			const normalized = provider.parseWebhookEvent(payload);
 
-			// Event-id-level idempotency: duplicate deliveries short-circuit
-			// before any handler runs. Downstream resource-level dedup
-			// (stripePaymentIntentId, stripeRefundId, …) still protects
-			// against out-of-order deliveries for different events against
-			// the same resource.
-			if (event.id) {
-				const fresh = await recordStripeEvent(ctx, event.id, event.type);
+			if (normalized.providerEventId) {
+				const fresh = await recordStripeEvent(
+					ctx,
+					normalized.providerEventId,
+					normalized.type === "unhandled"
+						? normalized.providerEventType
+						: normalized.type,
+				);
 				if (!fresh) {
 					return new Response(
 						JSON.stringify({ received: true, duplicate: true }),
@@ -612,169 +938,47 @@ export const webhookRoutes = {
 				}
 			}
 
-			try {
-				switch (event.type) {
-					case "payment_intent.succeeded":
-						return await handlePaymentIntentSucceeded(
-							ctx,
-							event.data.object as StripePaymentIntent,
-						);
-					case "payment_intent.payment_failed":
-					case "payment_intent.canceled":
-						return await handlePaymentIntentFailure(
-							ctx,
-							event.data.object as StripePaymentIntent,
-						);
-					case "checkout.session.completed":
-						return await handleCheckoutSessionCompleted(
-							ctx,
-							event.data.object as StripeCheckoutSession,
-						);
-					case "checkout.session.async_payment_failed":
-					case "checkout.session.expired":
-						return await handleCheckoutSessionTerminated(
-							ctx,
-							event.data.object as StripeCheckoutSession,
-						);
-					case "charge.refunded":
-						return await handleChargeRefunded(
-							ctx,
-							event.data.object as StripeCharge,
-						);
-					case "customer.subscription.created":
-					case "customer.subscription.updated":
-					case "customer.subscription.resumed":
-					case "customer.subscription.paused":
-						await upsertFromStripe(
-							ctx,
-							event.data.object as StripeSubscription,
-						);
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					case "customer.subscription.deleted": {
-						const sub = event.data.object as StripeSubscription;
-						const local = await findSubscription(ctx, sub.id);
-						if (local) {
-							await subsStore(ctx).put(local.id, {
-								...local,
-								status: "canceled",
-								canceledAt: new Date().toISOString(),
-								updatedAt: new Date().toISOString(),
-							});
-						}
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					}
-					case "invoice.payment_succeeded":
-					case "invoice.paid": {
-						const stripeInvoice = event.data.object as StripeInvoice;
-						const invoiceRecord = await upsertInvoiceFromStripe(
-							ctx,
-							stripeInvoice,
-						);
-						// Renewal email on cycle invoices only. The initial
-						// period is covered by the order receipt issued at
-						// checkout, so we skip `subscription_create` /
-						// `subscription` to avoid a duplicate on the very
-						// first paid period.
-						if (
-							invoiceRecord &&
-							stripeInvoice.billing_reason === "subscription_cycle"
-						) {
-							await sendSubscriptionRenewedEmail(ctx, invoiceRecord);
-						}
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					}
-					case "invoice.payment_failed":
-						await handleInvoicePaymentFailed(
-							ctx,
-							event.data.object as StripeInvoice,
-						);
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					case "account.updated": {
-						const account = event.data.object as StripeAccount;
-						const previous =
-							await findVendorByStripeAccountId(ctx, account.id);
-						const wasActive =
-							previous?.onboardingStatus === "active" &&
-							previous.chargesEnabled === true;
-						const vendor = await upsertVendorFromStripeAccount(
-							ctx,
-							account,
-						);
-						// Activation edge: chargesEnabled flipped false→true.
-						// Email is idempotent via a KV marker inside the send
-						// helper, so even webhook retries won't dupe.
-						if (vendor && !wasActive && vendor.chargesEnabled) {
-							await sendVendorActivated(
-								ctx,
-								vendor,
-								ctx.url("/vendor/dashboard"),
-							);
-						}
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					}
-					case "payout.paid":
-					case "payout.failed":
-					case "payout.canceled":
-					case "payout.updated": {
-						const payout = event.data.object as StripePayout;
-						const acctRaw = (event as unknown as { account?: string }).account;
-						if (!acctRaw) {
-							ctx.log.warn("payout.* missing event.account field", {
-								payoutId: payout.id,
-							});
-							return new Response(JSON.stringify({ received: true, skipped: true }), {
-								status: 200,
-								headers: { "Content-Type": "application/json" },
-							});
-						}
-						const payoutRecord = await recordPayoutFromStripe(
-							ctx,
-							acctRaw,
-							payout,
-						);
-						if (payoutRecord && event.type === "payout.paid") {
-							const vendor = await findVendorByStripeAccountId(
-								ctx,
-								acctRaw,
-							);
-							if (vendor) {
-								await sendVendorPayout(
-									ctx,
-									vendor,
-									payoutRecord,
-									ctx.url("/vendor/dashboard"),
-								);
-							}
-						}
-						return new Response(JSON.stringify({ received: true }), {
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						});
-					}
-					default:
-						return new Response(
-							JSON.stringify({ received: true, type: event.type, skipped: true }),
-							{ status: 200, headers: { "Content-Type": "application/json" } },
-						);
+			if (provider.id === "stripe") {
+				let event: { id: string; type: string; data: { object: unknown } };
+				try {
+					event = JSON.parse(payload);
+				} catch {
+					return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					});
 				}
+
+				try {
+					return await dispatchStripeSpecificEvent(ctx, event);
+				} catch (err) {
+					ctx.log.error("Stripe webhook handler error", {
+						type: event.type,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					return new Response(
+						JSON.stringify({
+							error: err instanceof Error ? err.message : "Webhook handler failed",
+						}),
+						{ status: 500, headers: { "Content-Type": "application/json" } },
+					);
+				}
+			}
+
+			// Generic non-Stripe providers
+			try {
+				if (normalized.type === "charge.succeeded") {
+					return await handleNormalizedChargeSucceeded(ctx, normalized);
+				}
+				if (normalized.type === "charge.failed") {
+					return await handleNormalizedChargeFailed(ctx, normalized);
+				}
+				return new Response(
+					JSON.stringify({ received: true, type: normalized.type, skipped: true }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
 			} catch (err) {
-				ctx.log.error("Stripe webhook handler error", {
-					type: event.type,
+				ctx.log.error("Generic webhook handler error", {
 					error: err instanceof Error ? err.message : String(err),
 				});
 				return new Response(

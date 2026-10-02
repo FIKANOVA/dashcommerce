@@ -237,6 +237,9 @@ export interface Order {
 	vendorSplits?: VendorSplit[];
 	subscriptionIds?: string[];
 	stripePaymentIntentId: string; // unique
+	providerId?: string;
+	paymentReference?: string;
+	checkoutReference?: string;
 	stripeCustomerId?: string;
 	stripeChargeId?: string;
 	paymentMethodType?: string; // card, link, applepay, …
@@ -277,6 +280,8 @@ export interface Refund {
 	reason?: string;
 	status: "pending" | "succeeded" | "failed";
 	stripeRefundId: string; // unique
+	providerId?: string;
+	refundRequestId?: string;
 	lineItemRefunds?: Array<{
 		orderItemId: string;
 		quantity: number;

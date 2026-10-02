@@ -37,3 +37,4 @@ export {
 	type PaymentProviderId,
 	type RegisterProviderOptions,
 } from "./payment-provider/registry";
+export { toPaymentProviderRuntimeContext } from "./payment-provider/runtime";

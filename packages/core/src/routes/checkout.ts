@@ -35,10 +35,34 @@ import { normalizeProductFields } from "../products/normalize";
 import { computeSplit, connectEnabled } from "../vendors/split";
 import { resolveSessionId } from "./cart";
 import { DEFAULT_CHECKOUT_MODE, type CheckoutMode } from "../settings/schema";
+import { resolveProvider } from "../payment-provider/registry";
+import type { InitCheckoutInput, PaymentProviderCredentials } from "../payment-provider/types";
+import { toPaymentProviderRuntimeContext } from "../payment-provider/runtime";
+import { findOrderByOrderDraftId } from "../orders/create";
 
 const DRAFT_PREFIX = "draft:";
 const DRAFT_TTL_MS = 15 * 60 * 1000;
 const LOCK_TTL_MS = 15 * 60 * 1000;
+
+async function loadProviderCredentials(
+	ctx: PluginContext,
+	providerId: string,
+): Promise<PaymentProviderCredentials> {
+	if (providerId === "stripe") {
+		const secret = (await ctx.kv.get<string>("settings:stripeSecretKey")) ?? "";
+		const webhookSecret = (await ctx.kv.get<string>("settings:stripeWebhookSecret")) ?? undefined;
+		return { secretKey: secret, webhookSecret };
+	}
+	const secret =
+		(await ctx.kv.get<string>(`settings:${providerId}SecretKey`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderSecretKey")) ??
+		"";
+	const webhookSecret =
+		(await ctx.kv.get<string>(`settings:${providerId}WebhookSecret`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderWebhookSecret")) ??
+		undefined;
+	return { secretKey: secret, webhookSecret };
+}
 
 async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 	const mode = (await ctx.kv.get<string>("settings:taxMode")) ?? "flat";
@@ -373,10 +397,13 @@ export const checkoutRoutes = {
 				});
 			}
 
-			const client = await loadStripeClient(ctx);
-			if (!client) {
+			const provider = await resolveProvider(ctx.kv);
+			const creds = await loadProviderCredentials(ctx, provider.id);
+			if (!provider.id.includes("mock") && !creds.secretKey) {
 				return new Response(
-					JSON.stringify({ error: "Stripe not configured (settings:stripeSecretKey)" }),
+					JSON.stringify({
+						error: `Payment provider "${provider.id}" not configured (missing secretKey)`,
+					}),
 					{ status: 500, headers: { "Content-Type": "application/json" } },
 				);
 			}
@@ -425,6 +452,14 @@ export const checkoutRoutes = {
 					status: 400,
 					headers: { "Content-Type": "application/json" },
 				});
+			}
+			if (!provider.supportsCurrency(recalculated.currency)) {
+				return new Response(
+					JSON.stringify({
+						error: `Currency "${recalculated.currency}" is not supported by payment provider "${provider.id}".`,
+					}),
+					{ status: 400, headers: { "Content-Type": "application/json" } },
+				);
 			}
 			await save(ctx, recalculated);
 
@@ -560,7 +595,7 @@ export const checkoutRoutes = {
 			const metadata: Record<string, string> = {
 				orderDraftId,
 				sessionId,
-				siteUrl: ctx.site.url,
+				siteUrl: ctx.site?.url ?? (ctx.url ? ctx.url("/") : ""),
 				checkoutMode: "hosted",
 				kind: isSubscriptionCart ? "subscription" : "payment",
 			};
@@ -591,74 +626,105 @@ export const checkoutRoutes = {
 					}
 				: undefined;
 
-			const session = await createCheckoutSession(
-				ctx,
-				{
-					mode: isSubscriptionCart ? "subscription" : "payment",
-					successUrl,
-					cancelUrl,
-					lineItems,
-					...(recalculated.customerEmail
-						? { customerEmail: recalculated.customerEmail }
-						: {}),
-					...(hasPhysical && recalculated.shippingAddress
-						? {
-								shippingAddressCollection: {
-									allowedCountries: [recalculated.shippingAddress.country],
-								},
-							}
-						: {}),
-					...(shippingOptions.length > 0 ? { shippingOptions } : {}),
-					billingAddressCollection: "auto",
-					allowPromotionCodes: false,
-					clientReferenceId: orderDraftId,
-					metadata,
-					// Stripe Tax — the merchant toggled "stripe_tax" as the
-					// cart's tax mode. Stripe Checkout then looks up the
-					// buyer's jurisdiction from the billing/shipping address
-					// and recomputes tax server-side on the hosted page.
-					...(stripeTaxEnabled ? { automaticTax: true } : {}),
-					...(subscriptionMetadata ? { subscriptionMetadata } : {}),
-					...(subscriptionTrialPeriodDays > 0
-						? { subscriptionTrialPeriodDays }
-						: {}),
-					// One-time-payment-only fields. `createCheckoutSession`
-					// also gates these on `mode === "payment"`, but we
-					// skip the whole block for subscription carts to keep
-					// the intent obvious.
-					...(!isSubscriptionCart
-						? {
-								paymentIntentMetadata: {
-									orderDraftId,
-									sessionId,
-									checkoutMode: "hosted",
-								},
-								...(recalculated.customerEmail
-									? { paymentIntentReceiptEmail: recalculated.customerEmail }
-									: {}),
-								...(transferData ? { paymentIntentTransferData: transferData } : {}),
-								...(applicationFeeAmount !== undefined
-									? { paymentIntentApplicationFeeAmount: applicationFeeAmount }
-									: {}),
-							}
-						: {}),
+			const inputCheckout: InitCheckoutInput = {
+				orderDraftId,
+				amount: recalculated.total.amount,
+				currency: recalculated.currency,
+				customer: {
+					email: recalculated.customerEmail ?? "",
 				},
-				client,
-				`cs:${orderDraftId}`,
+				lineItems: lineItems.map((li) => ({
+					name: li.name,
+					amount: li.amount,
+					currency: li.currency,
+					quantity: li.quantity,
+					metadata: li.metadata,
+					recurring: li.recurring,
+					taxBehavior: li.taxBehavior,
+				})),
+				billingAddress: recalculated.billingAddress
+					? {
+							line1: recalculated.billingAddress.line1,
+							line2: recalculated.billingAddress.line2,
+							city: recalculated.billingAddress.city,
+							state: recalculated.billingAddress.region,
+							postalCode: recalculated.billingAddress.postalCode,
+							country: recalculated.billingAddress.country,
+						}
+					: undefined,
+				shippingAddress: recalculated.shippingAddress
+					? {
+							line1: recalculated.shippingAddress.line1,
+							line2: recalculated.shippingAddress.line2,
+							city: recalculated.shippingAddress.city,
+							state: recalculated.shippingAddress.region,
+							postalCode: recalculated.shippingAddress.postalCode,
+							country: recalculated.shippingAddress.country,
+						}
+					: undefined,
+				shippingOptions: shippingOptions.map((s) => ({
+					id: s.metadata?.shippingMethodId ?? "shipping",
+					label: s.displayName,
+					amount: s.amount,
+					currency: s.currency,
+					metadata: s.metadata,
+				})),
+				allowedShippingCountries:
+					hasPhysical && recalculated.shippingAddress?.country
+						? [recalculated.shippingAddress.country]
+						: undefined,
+				successUrl,
+				cancelUrl,
+				metadata,
+				providerOptions: {
+					stripe: {
+						mode: isSubscriptionCart ? "subscription" : "payment",
+						automaticTax: stripeTaxEnabled,
+						billingAddressCollection: "auto",
+						subscriptionTrialPeriodDays:
+							subscriptionTrialPeriodDays > 0 ? subscriptionTrialPeriodDays : undefined,
+						subscriptionMetadata,
+						transferData,
+						applicationFeeAmount,
+					},
+				},
+			};
+
+			const checkoutResult = await provider.initCheckout(
+				toPaymentProviderRuntimeContext(ctx),
+				inputCheckout,
+				creds,
 			);
 
-			if (!session.url) {
+			if (checkoutResult.kind === "redirect" && !checkoutResult.redirectUrl) {
 				return new Response(
-					JSON.stringify({ error: "Stripe did not return a hosted URL" }),
+					JSON.stringify({
+						error: `Payment provider "${provider.id}" did not return a hosted URL`,
+					}),
 					{ status: 502, headers: { "Content-Type": "application/json" } },
 				);
 			}
 
+			// Update draft with provider reference
+			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
+				cart: recalculated,
+				ttlMs: DRAFT_TTL_MS,
+				createdAt: new Date().toISOString(),
+				providerId: provider.id,
+				checkoutReference: checkoutResult.checkoutReference,
+			});
+
 			return new Response(
 				JSON.stringify({
-					url: session.url,
-					sessionId: session.id,
+					url: checkoutResult.kind === "redirect" ? checkoutResult.redirectUrl : undefined,
+					redirectUrl:
+						checkoutResult.kind === "redirect" ? checkoutResult.redirectUrl : undefined,
+					sessionId: checkoutResult.checkoutReference,
+					checkoutReference: checkoutResult.checkoutReference,
+					kind: checkoutResult.kind,
+					status: checkoutResult.status ?? "pending",
 					orderDraftId,
+					providerId: provider.id,
 					total: recalculated.total,
 					currency: recalculated.currency,
 				}),
@@ -685,12 +751,106 @@ export const checkoutRoutes = {
 			});
 		},
 	},
+
+	/**
+	 * Protected order-status read used by `/thank-you/[draftId]` and storefront polling.
+	 * Requires draftId, checks session ownership, exposes no unauthorized PII,
+	 * marks Cache-Control: no-store.
+	 */
+	"checkout/status": {
+		public: true,
+		handler: async (routeCtx: RouteContext, _ctx?: PluginContext) => {
+			const ctx = (_ctx ?? (routeCtx as unknown as PluginContext)) as PluginContext;
+			const url = new URL(routeCtx.request.url);
+			const orderDraftId =
+				url.searchParams.get("orderDraftId") ??
+				((routeCtx.input as { orderDraftId?: string } | undefined)?.orderDraftId ?? "");
+
+			if (!orderDraftId) {
+				return new Response(JSON.stringify({ error: "orderDraftId is required" }), {
+					status: 400,
+					headers: {
+						"Content-Type": "application/json",
+						"Cache-Control": "no-store",
+					},
+				});
+			}
+
+			const snapshot = await ctx.kv.get<CheckoutDraftSnapshot>(draftKey(orderDraftId));
+			const { sessionId } = resolveSessionId(routeCtx.request);
+
+			// Check if an order already exists for this draft
+			const matchingOrder = await findOrderByOrderDraftId(ctx, orderDraftId);
+
+			if (matchingOrder) {
+				return new Response(
+					JSON.stringify({
+						status: "completed",
+						orderId: matchingOrder.id,
+						orderNumber: matchingOrder.orderNumber,
+						paymentStatus: matchingOrder.paymentStatus,
+					}),
+					{
+						status: 200,
+						headers: {
+							"Content-Type": "application/json",
+							"Cache-Control": "no-store",
+						},
+					},
+				);
+			}
+
+			if (!snapshot) {
+				return new Response(
+					JSON.stringify({
+						status: "expired",
+						message: "Draft expired or not found",
+					}),
+					{
+						status: 200,
+						headers: {
+							"Content-Type": "application/json",
+							"Cache-Control": "no-store",
+						},
+					},
+				);
+			}
+
+			// Validate session ownership if session cookie is present
+			if (sessionId && snapshot.cart.sessionId && sessionId !== snapshot.cart.sessionId) {
+				return new Response(JSON.stringify({ error: "Unauthorized session access" }), {
+					status: 403,
+					headers: {
+						"Content-Type": "application/json",
+						"Cache-Control": "no-store",
+					},
+				});
+			}
+
+			return new Response(
+				JSON.stringify({
+					status: "pending",
+					providerId: snapshot.providerId ?? "stripe",
+					checkoutReference: snapshot.checkoutReference,
+				}),
+				{
+					status: 200,
+					headers: {
+						"Content-Type": "application/json",
+						"Cache-Control": "no-store",
+					},
+				},
+			);
+		},
+	},
 };
 
 export type CheckoutDraftSnapshot = {
 	cart: CartState;
 	ttlMs: number;
 	createdAt: string;
+	providerId?: string;
+	checkoutReference?: string;
 };
 
 export function draftKey(orderDraftId: string): string {

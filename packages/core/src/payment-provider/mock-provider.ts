@@ -21,9 +21,15 @@ import type {
 } from "./types";
 
 export interface MockPaymentProviderOptions {
+	/** Custom provider id (defaults to "mock"). */
+	id?: string;
+	/** Custom supported currencies (defaults to ["KES", "USD"]). */
+	supportedCurrencies?: string[];
 	/** Force initCheckout/refund to fail, for negative-path tests. */
 	failInit?: boolean;
 	failRefund?: boolean;
+	/** Force webhook verification to fail. */
+	failVerifyWebhook?: boolean;
 	/** Force async pending checkout mode instead of hosted redirect. */
 	asyncPendingCheckout?: boolean;
 }
@@ -31,14 +37,18 @@ export interface MockPaymentProviderOptions {
 export function createMockPaymentProvider(
 	options: MockPaymentProviderOptions = {},
 ): PaymentProvider {
+	const providerId = options.id ?? "mock";
 	return {
-		id: "mock",
-		label: "Mock (test-only)",
+		id: providerId,
+		label: `Mock (${providerId})`,
 
 		supportsCurrency(currency: string): boolean {
 			if (!currency || typeof currency !== "string") return false;
 			const normalized = currency.trim().toUpperCase();
-			return ["KES", "USD"].includes(normalized);
+			const supported = options.supportedCurrencies
+				? options.supportedCurrencies.map((c) => c.trim().toUpperCase())
+				: ["KES", "USD"];
+			return supported.includes(normalized);
 		},
 
 		async initCheckout(_ctx, input: InitCheckoutInput): Promise<InitCheckoutResult> {
@@ -70,6 +80,13 @@ export function createMockPaymentProvider(
 		},
 
 		async verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult> {
+			if (
+				options.failVerifyWebhook ||
+				input.signatureHeader === "wrong-secret" ||
+				input.signatureHeader === "invalid"
+			) {
+				return { ok: false, reason: "mock: signature verification failed" };
+			}
 			if (input.secret !== "test-secret") {
 				return { ok: false, reason: "mock: secret mismatch" };
 			}
@@ -118,7 +135,7 @@ export function createMockPaymentProvider(
 				return {
 					type: "charge.succeeded",
 					orderDraftId: event.orderDraftId ?? "",
-					providerId: "mock",
+					providerId,
 					providerEventId,
 					eventIdSource,
 					checkoutReference: checkoutRef,
@@ -138,7 +155,7 @@ export function createMockPaymentProvider(
 				return {
 					type: "charge.failed",
 					orderDraftId: event.orderDraftId ?? "",
-					providerId: "mock",
+					providerId,
 					providerEventId,
 					eventIdSource,
 					checkoutReference: checkoutRef,

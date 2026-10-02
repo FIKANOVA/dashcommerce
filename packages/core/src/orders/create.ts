@@ -138,6 +138,20 @@ async function findOrderByPaymentIntent(
 	return { ...(row.data as Order), id: row.id };
 }
 
+async function findOrderByOrderDraftId(
+	ctx: PluginContext,
+	orderDraftId: string,
+): Promise<Order | null> {
+	const result = await ordersStore(ctx).query({
+		limit: 100,
+	});
+	const hit = result.items.find(
+		(row) => (row.data as Order)?.metadata?.orderDraftId === orderDraftId,
+	);
+	if (!hit) return null;
+	return { ...(hit.data as Order), id: hit.id };
+}
+
 async function upsertCustomer(
 	ctx: PluginContext,
 	input: {
@@ -464,4 +478,4 @@ export async function loadOrderItems(
 	return result.items.map((r) => ({ ...(r.data as OrderItem), id: r.id }));
 }
 
-export { findOrderByPaymentIntent };
+export { findOrderByPaymentIntent, findOrderByOrderDraftId };
