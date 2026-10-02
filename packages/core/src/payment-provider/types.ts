@@ -1,31 +1,14 @@
 /**
- * PaymentProvider — the gateway abstraction this fork introduces.
+ * PaymentProvider — the gateway abstraction for DashCommerce.
  *
- * Upstream `emdashCommerce/dashcommerce` wires Stripe directly throughout
- * `routes/checkout.ts` and `routes/webhook.ts` (see the module comments
- * there) with no seam for a second gateway. This interface is that seam.
+ * Upstream `emdashCommerce/dashcommerce` wired Stripe directly throughout
+ * checkout and webhook routes. This interface introduces the gateway-agnostic
+ * seam so multiple processors (Stripe, Paystack, offline POS, etc.) plug in
+ * cleanly without modifying core code.
  *
- * Scope, deliberately: this interface covers the payment path every
- * merchant needs regardless of gateway — initialise a charge (embedded or
- * hosted), verify a webhook, mark a charge/session paid, refund. It does
- * NOT attempt to abstract Stripe Connect (multi-vendor payouts) or Stripe
- * Subscriptions/Billing (recurring invoices, dunning) — those are
- * Stripe-specific product surfaces with no structural equivalent in
- * Paystack (Paystack has "subaccounts" and its own recurring-charge
- * primitive, but they are not a drop-in replacement, and Nondies RFC's
- * memberships are annual one-off purchases with no auto-renew per
- * SPEC.md §4.2/§7, so this fork does not need a Paystack subscription
- * implementation to ship). A future contributor wanting Connect-equivalent
- * marketplace payouts or Paystack recurring billing can extend this
- * interface without breaking existing implementations — every method here
- * is optional-safe to add to, none removed.
- *
- * Both `StripePaymentProvider` (this fork, refactored from upstream's
- * direct Stripe calls) and `PaystackPaymentProvider` (in the sibling
- * a gateway package (e.g. Paystack) package) implement this same interface.
- * `routes/checkout.ts` and `routes/webhook.ts` are refactored to depend on
- * `PaymentProvider` only, selected at runtime by `settings:paymentProvider`
- * ("stripe" | "paystack").
+ * Scope: covers checkout initiation (hosted redirect or asynchronous pending),
+ * webhook verification and normalized event parsing, payment status, refunds,
+ * and currency capability checks.
  */
 
 /** Integer minor units (cents, kobo) — never a float. */
@@ -49,7 +32,7 @@ export interface PaymentProviderAddress {
 	country?: string; // ISO-3166 alpha-2
 }
 
-/** One line item for a hosted checkout page. */
+/** One line item for checkout. */
 export interface PaymentProviderLineItem {
 	name: string;
 	description?: string;
@@ -57,6 +40,29 @@ export interface PaymentProviderLineItem {
 	currency: string;
 	quantity: number;
 	metadata?: Record<string, string>;
+	recurring?: {
+		interval: "day" | "week" | "month" | "year";
+		intervalCount?: number;
+	};
+	taxBehavior?: "inclusive" | "exclusive" | "unspecified";
+}
+
+export interface PaymentProviderShippingOption {
+	id: string;
+	label: string;
+	amount: number;
+	currency: string;
+	metadata?: Record<string, string>;
+}
+
+export interface StripeCheckoutOptions {
+	mode?: "payment" | "subscription";
+	automaticTax?: boolean;
+	billingAddressCollection?: "auto" | "required";
+	subscriptionTrialPeriodDays?: number;
+	subscriptionMetadata?: Record<string, string>;
+	transferData?: { destination: string; amount?: number };
+	applicationFeeAmount?: number;
 }
 
 export interface InitCheckoutInput {
@@ -69,18 +75,40 @@ export interface InitCheckoutInput {
 	lineItems: PaymentProviderLineItem[];
 	successUrl: string;
 	cancelUrl: string;
+	billingAddress?: PaymentProviderAddress;
+	shippingAddress?: PaymentProviderAddress;
+	shippingOptions?: PaymentProviderShippingOption[];
+	allowedShippingCountries?: string[];
 	metadata?: Record<string, string>;
 	/** Channel hint for gateways that support payment-method restriction on
 	 * the hosted page (Paystack: card/mobile_money/bank; ignored by Stripe). */
 	preferredChannels?: string[];
+	/** Typed provider-specific options bag */
+	providerOptions?: {
+		stripe?: StripeCheckoutOptions;
+		[providerId: string]: unknown;
+	};
 }
 
-export interface InitCheckoutResult {
-	/** Provider's own reference/session/transaction id. */
-	providerReference: string;
-	/** URL to redirect the customer to for hosted payment. */
-	redirectUrl: string;
-}
+export type InitCheckoutResult =
+	| {
+			kind: "redirect";
+			/** Checkout reference (e.g. Stripe checkout session id, Paystack access code/reference) */
+			checkoutReference: string;
+			/** URL to redirect the customer to for hosted payment. */
+			redirectUrl: string;
+			status?: "pending" | "succeeded";
+			/** @deprecated For backwards compatibility during transition; use checkoutReference */
+			providerReference?: string;
+	  }
+	| {
+			kind: "pending";
+			/** Checkout reference (e.g. STK initiation transaction reference) */
+			checkoutReference: string;
+			status: "pending";
+			/** @deprecated For backwards compatibility during transition; use checkoutReference */
+			providerReference?: string;
+	  };
 
 export interface VerifyWebhookInput {
 	/** Raw request body — signature verification must run against the
@@ -99,6 +127,8 @@ export interface VerifyWebhookResult {
 	reason?: string;
 }
 
+export type EventIdSource = "native" | "derived";
+
 /** Normalised webhook event, after provider-specific verification and
  * parsing — this is what `routes/webhook.ts` dispatches on, so it never
  * needs to know which gateway sent it. */
@@ -106,7 +136,12 @@ export type NormalizedPaymentEvent =
 	| {
 			type: "charge.succeeded";
 			orderDraftId: string;
-			providerReference: string;
+			providerId: string;
+			providerEventId: string;
+			eventIdSource: EventIdSource;
+			checkoutReference?: string;
+			/** Confirmed captured payment reference (e.g. PaymentIntent ID or Charge ID) */
+			paymentReference: string;
 			amount: number;
 			currency: string;
 			customer: PaymentProviderCustomer;
@@ -116,31 +151,46 @@ export type NormalizedPaymentEvent =
 			 * order (e.g. "M-Pesa", "Card", "Apple Pay"). */
 			channel?: string;
 			raw: unknown;
+			/** @deprecated For backwards compatibility during transition; use paymentReference */
+			providerReference?: string;
 	  }
 	| {
 			type: "charge.failed";
 			orderDraftId: string;
-			providerReference: string;
+			providerId: string;
+			providerEventId: string;
+			eventIdSource: EventIdSource;
+			checkoutReference?: string;
+			paymentReference?: string;
 			reason?: string;
 			raw: unknown;
+			/** @deprecated For backwards compatibility during transition; use paymentReference */
+			providerReference?: string;
 	  }
 	| {
 			type: "unhandled";
 			providerEventType: string;
+			providerEventId?: string;
+			eventIdSource?: EventIdSource;
 			raw: unknown;
 	  };
 
 export interface CreateRefundInput {
-	/** Provider reference from the original successful charge. */
-	providerReference: string;
+	/** Confirmed payment reference from the original successful charge (e.g. PaymentIntent ID, NOT checkout session ID). */
+	paymentReference: string;
+	/** Scoped unique refund operation ID — mandatory to enforce refund idempotency. */
+	refundRequestId: string;
 	/** Minor units. Omit for a full refund. */
 	amount?: number;
 	currency: string;
 	reason?: string;
+	/** @deprecated For backwards compatibility during transition; use paymentReference */
+	providerReference?: string;
 }
 
 export interface RefundResult {
 	providerRefundId: string;
+	refundRequestId?: string;
 	status: "pending" | "succeeded" | "failed";
 	amount: number;
 	currency: string;
@@ -155,73 +205,51 @@ export interface PaymentProviderCredentials {
 }
 
 /**
- * The seam. Both StripePaymentProvider and PaystackPaymentProvider
- * implement this. `ctx` is always the plugin's `PluginContext` (or the
- * subset of it — `http`, `log` — a provider needs); providers must use
- * `ctx.http.fetch` (never global `fetch`) so `allowedHosts` is honoured in
- * the sandbox, and `crypto.subtle` (never a Node `crypto` import) for any
- * HMAC/signature work, matching the sandbox-safety rules already
- * established in this fork's `stripe/*` modules.
+ * The seam. Gateway adapters implement this interface.
+ * `ctx` is always the plugin's `PluginContext` (or the subset of it — `http`, `log` —
+ * a provider needs); providers must use `ctx.http.fetch` (never global `fetch`) so
+ * `allowedHosts` is honoured in the sandbox, and `crypto.subtle` (never a Node `crypto` import)
+ * for any HMAC/signature work.
  */
 export interface PaymentProvider {
-	/** Machine-readable id, e.g. "stripe" | "paystack". Used for the
-	 * `settings:paymentProvider` switch and for tagging orders with which
-	 * gateway processed them. */
+	/** Machine-readable id, e.g. "stripe" | "paystack" | "mock". */
 	readonly id: string;
 
 	/** Human label for admin UI / receipts, e.g. "Stripe" | "Paystack". */
 	readonly label: string;
 
-	/** ISO-4217 currencies this provider can charge in this deployment.
-	 * Stripe: broad. Paystack: KES + a handful of others depending on the
-	 * merchant's Paystack business country — Nondies' Paystack account is
-	 * Kenya-only, so this fork's Paystack provider returns `["KES"]`. */
-	supportedCurrencies(): string[];
+	/**
+	 * Returns true if this provider supports the given ISO-4217 currency
+	 * in this deployment/account.
+	 */
+	supportsCurrency(currency: string): boolean;
 
-	/** Initialise a hosted checkout/transaction. Returns a redirect URL —
-	 * this interface deliberately does not model Stripe's embedded
-	 * PaymentElement/client_secret flow, since Paystack (and most
-	 * non-Stripe gateways) don't have an equivalent client-side primitive;
-	 * hosted-redirect is the lowest common denominator every gateway
-	 * supports, and it is also what "M-Pesa STK" checkout needs in
-	 * practice (the STK push is triggered from Paystack's own hosted page
-	 * once the customer picks the M-Pesa channel there). */
+	/** Initialise a hosted or asynchronous checkout. */
 	initCheckout(
 		ctx: PaymentProviderRuntimeContext,
 		input: InitCheckoutInput,
 		credentials: PaymentProviderCredentials,
 	): Promise<InitCheckoutResult>;
 
-	/** Verify a webhook's signature. Must be constant-time and must not
-	 * assume any particular hash algorithm — Stripe uses HMAC-SHA256,
-	 * Paystack uses HMAC-SHA512 (§4.2). */
+	/** Verify a webhook's signature. Must be constant-time and algorithm-agnostic. */
 	verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult>;
 
-	/** Parse an already-signature-verified raw webhook body into a
-	 * normalised event `routes/webhook.ts` can dispatch on without any
-	 * gateway-specific branching. */
+	/** Parse an already-signature-verified raw webhook body into a normalised event.
+	 * Must return an 'unhandled' event rather than throwing on unparseable payloads. */
 	parseWebhookEvent(rawBody: string): NormalizedPaymentEvent;
 
-	/** Issue a refund (full or partial) against a previously successful
-	 * charge. */
+	/** Issue a refund against a previously confirmed captured payment. */
 	refund(
 		ctx: PaymentProviderRuntimeContext,
 		input: CreateRefundInput,
 		credentials: PaymentProviderCredentials,
 	): Promise<RefundResult>;
 
-	/** Format a minor-units amount for display in the provider's own
-	 * convention (mostly relevant for KSh vs USD-style gateways that
-	 * expect different minor-unit granularity; both Stripe and Paystack
-	 * use 2-decimal minor units for KES/USD, but this hook exists so a
-	 * future 0-decimal-currency provider doesn't need interface changes). */
+	/** Format a minor-units amount for display. */
 	formatAmount(money: Money): string;
 }
 
-/** The subset of PluginContext a PaymentProvider implementation may use.
- * Kept narrow and named so implementations can't reach into unrelated
- * plugin capabilities (storage, users, media) — payment providers only
- * ever need outbound HTTP + logging. */
+/** The subset of PluginContext a PaymentProvider implementation may use. */
 export interface PaymentProviderRuntimeContext {
 	http: { fetch: typeof fetch };
 	log: {

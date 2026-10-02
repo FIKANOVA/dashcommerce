@@ -1,26 +1,41 @@
 /**
- * Provider registry + runtime selection. `routes/checkout.ts` and
- * `routes/webhook.ts` call `resolveProvider(ctx)` instead of importing
- * `../stripe/*` directly — that one seam is the entire fork.
+ * Provider registry + runtime selection.
  *
  * Selection is by `settings:paymentProvider` (plugin KV), defaulting to
- * "stripe" for backwards compatibility with any existing upstream
- * install. Site operators switch it via the plugin's settings admin
- * page (or directly via KV during test-mode bring-up).
+ * "stripe" for backwards compatibility.
  */
 
 import type { PaymentProvider } from "./types";
 import { stripePaymentProvider } from "./stripe-provider";
 
-export type PaymentProviderId = "stripe" | "paystack" | "mock";
+export type PaymentProviderId = "stripe" | "paystack" | "mock" | string;
 
 const registry = new Map<string, PaymentProvider>();
 registry.set("stripe", stripePaymentProvider);
 
-/** Sibling packages (e.g. a gateway package (e.g. Paystack)) register
- * themselves here at import time so this fork's core never needs a
- * hard dependency on every gateway package that exists. */
-export function registerPaymentProvider(provider: PaymentProvider): void {
+export interface RegisterProviderOptions {
+	/** Explicitly allow replacing an existing registered provider with the same ID. */
+	override?: boolean;
+}
+
+/**
+ * Sibling packages (e.g. @dashcommerce/paystack) register themselves here at import
+ * time so core maintains no hard dependency on external gateway implementations.
+ *
+ * Rejects empty IDs and duplicate registrations unless { override: true } is explicitly passed.
+ */
+export function registerPaymentProvider(
+	provider: PaymentProvider,
+	options: RegisterProviderOptions = {},
+): void {
+	if (!provider || !provider.id || provider.id.trim() === "") {
+		throw new Error("Cannot register a payment provider with an empty ID");
+	}
+	if (registry.has(provider.id) && !options.override) {
+		throw new Error(
+			`Payment provider "${provider.id}" is already registered. Pass { override: true } to replace it.`,
+		);
+	}
 	registry.set(provider.id, provider);
 }
 
@@ -32,16 +47,21 @@ export function listPaymentProviders(): PaymentProvider[] {
 	return Array.from(registry.values());
 }
 
+/** Test utility: reset registry to initial default state containing only stripe. */
+export function resetPaymentProviders(): void {
+	registry.clear();
+	registry.set("stripe", stripePaymentProvider);
+}
+
 interface KVLike {
 	get<T>(key: string): Promise<T | null>;
 }
 
-const DEFAULT_PROVIDER_ID: PaymentProviderId = "stripe";
+const DEFAULT_PROVIDER_ID = "stripe";
 
 /** Resolve the active provider for this deployment from plugin KV. Falls
- * back to "stripe" (upstream's only option) if unset, and throws a clear
- * error if the configured id was never registered (e.g. paystack package
- * not imported into astro.config.mjs) rather than silently no-op-ing. */
+ * back to "stripe" (upstream's default) if unset, and throws a clear
+ * error if the configured id was never registered rather than silently no-op-ing. */
 export async function resolveProvider(kv: KVLike): Promise<PaymentProvider> {
 	const configured = (await kv.get<string>("settings:paymentProvider")) ?? DEFAULT_PROVIDER_ID;
 	const provider = registry.get(configured);
