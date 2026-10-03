@@ -15,6 +15,7 @@ import type {
 	Money,
 	NormalizedPaymentEvent,
 	PaymentProvider,
+	PaymentProviderAddress,
 	RefundResult,
 	VerifyWebhookInput,
 	VerifyWebhookResult,
