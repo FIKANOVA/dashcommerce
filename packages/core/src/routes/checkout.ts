@@ -53,15 +53,25 @@ async function loadProviderCredentials(
 		const webhookSecret = (await ctx.kv.get<string>("settings:stripeWebhookSecret")) ?? undefined;
 		return { secretKey: secret, webhookSecret };
 	}
+	const credsObj = await ctx.kv.get<Record<string, unknown>>("settings:paymentProviderCredentials");
+	if (credsObj && typeof credsObj === "object") {
+		return credsObj as PaymentProviderCredentials;
+	}
 	const secret =
 		(await ctx.kv.get<string>(`settings:${providerId}SecretKey`)) ??
+		(await ctx.kv.get<string>(`settings:${providerId}ApiKey`)) ??
 		(await ctx.kv.get<string>("settings:paymentProviderSecretKey")) ??
+		(await ctx.kv.get<string>("settings:paymentProviderApiKey")) ??
 		"";
+	const apiKey =
+		(await ctx.kv.get<string>(`settings:${providerId}ApiKey`)) ??
+		(await ctx.kv.get<string>("settings:paymentProviderApiKey")) ??
+		undefined;
 	const webhookSecret =
 		(await ctx.kv.get<string>(`settings:${providerId}WebhookSecret`)) ??
 		(await ctx.kv.get<string>("settings:paymentProviderWebhookSecret")) ??
 		undefined;
-	return { secretKey: secret, webhookSecret };
+	return { secretKey: secret, apiKey, webhookSecret };
 }
 
 async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
@@ -399,10 +409,10 @@ export const checkoutRoutes = {
 
 			const provider = await resolveProvider(ctx.kv);
 			const creds = await loadProviderCredentials(ctx, provider.id);
-			if (!provider.id.includes("mock") && !creds.secretKey) {
+			if (!provider.id.includes("mock") && !creds.secretKey && !creds.apiKey) {
 				return new Response(
 					JSON.stringify({
-						error: `Payment provider "${provider.id}" not configured (missing secretKey)`,
+						error: `Payment provider "${provider.id}" not configured (missing credentials)`,
 					}),
 					{ status: 500, headers: { "Content-Type": "application/json" } },
 				);
@@ -632,6 +642,12 @@ export const checkoutRoutes = {
 				currency: recalculated.currency,
 				customer: {
 					email: recalculated.customerEmail ?? "",
+					...((input as any).name || (input as any).customerName
+						? { name: (input as any).name ?? (input as any).customerName }
+						: {}),
+					...((input as any).phone || (input as any).customerPhone
+						? { phone: (input as any).phone ?? (input as any).customerPhone }
+						: {}),
 				},
 				lineItems: lineItems.map((li) => ({
 					name: li.name,

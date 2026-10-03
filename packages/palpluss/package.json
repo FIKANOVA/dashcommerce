@@ -1,0 +1,30 @@
+{
+  "name": "@dashcommerce/palpluss",
+  "version": "0.1.0",
+  "description": "PalPluss payment provider for DashCommerce — M-Pesa STK push and B2C payout capabilities",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@dashcommerce/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@dashcommerce/core": "workspace:*",
+    "tsdown": "^0.20.0",
+    "typescript": "^5.9.3"
+  }
+}
