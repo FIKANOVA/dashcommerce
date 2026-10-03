@@ -81,6 +81,18 @@
         "@dashcommerce/core": "workspace:*",
       },
     },
+    "packages/pos": {
+      "name": "@dashcommerce/pos",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@dashcommerce/core": "workspace:*",
+        "tsdown": "^0.20.0",
+        "typescript": "^5.9.3",
+      },
+      "peerDependencies": {
+        "@dashcommerce/core": "workspace:*",
+      },
+    },
     "packages/starter": {
       "name": "@dashcommerce/starter",
       "version": "0.3.0",
@@ -292,6 +304,8 @@
     "@dashcommerce/palpluss": ["@dashcommerce/palpluss@workspace:packages/palpluss"],
 
     "@dashcommerce/paystack": ["@dashcommerce/paystack@workspace:packages/paystack"],
+
+    "@dashcommerce/pos": ["@dashcommerce/pos@workspace:packages/pos"],
 
     "@dashcommerce/starter": ["@dashcommerce/starter@workspace:packages/starter"],
 
