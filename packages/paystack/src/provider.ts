@@ -34,7 +34,7 @@ const PAYSTACK_CHANNEL_MAP: Record<string, string> = {
 };
 
 function toPaystackClient(credentials: PaymentProviderCredentials): PaystackClientOptions {
-	return { secretKey: credentials.secretKey };
+	return { secretKey: credentials.secretKey || "" };
 }
 
 function mapChannels(preferred: string[] | undefined): string[] | undefined {

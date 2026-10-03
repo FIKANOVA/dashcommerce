@@ -31,7 +31,7 @@ import type {
 } from "./types";
 
 function toStripeClient(credentials: PaymentProviderCredentials): StripeClientOptions {
-	return { secretKey: credentials.secretKey };
+	return { secretKey: credentials.secretKey || "" };
 }
 
 /** Cast our narrow PaymentProviderRuntimeContext to PluginContext for existing helpers. */

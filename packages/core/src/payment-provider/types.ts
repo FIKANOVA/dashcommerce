@@ -200,8 +200,10 @@ export interface RefundResult {
  * own concrete shape but every one is loaded the same way: read from
  * plugin KV under `settings:<provider>SecretKey` / `settings:<provider>WebhookSecret`. */
 export interface PaymentProviderCredentials {
-	secretKey: string;
+	secretKey?: string;
+	apiKey?: string;
 	webhookSecret?: string;
+	[key: string]: unknown;
 }
 
 /**
