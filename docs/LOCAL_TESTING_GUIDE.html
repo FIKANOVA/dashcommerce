@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nondies RFC & DashCommerce — Comprehensive Local Testing Guide</title>
+  <style>
+    :root {
+      --bg: #0c0e14;
+      --card-bg: #141722;
+      --card-border: #23293b;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #f59e0b; /* Amber gold */
+      --accent-hover: #d97706;
+      --primary: #dc2626; /* Nondies Red */
+      --primary-hover: #b91c1c;
+      --success: #10b981;
+      --cyan: #06b6d4;
+      --code-bg: #090b10;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      padding-bottom: 80px;
+    }
+
+    header {
+      background: linear-gradient(180deg, rgba(220, 38, 38, 0.15) 0%, rgba(12, 14, 20, 0) 100%);
+      border-bottom: 1px solid var(--card-border);
+      padding: 40px 24px;
+      text-align: center;
+      position: relative;
+    }
+
+    .badge-bar {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border: 1px solid currentColor;
+    }
+    .badge-red { color: #f87171; border-color: rgba(248, 113, 113, 0.3); background: rgba(239, 68, 68, 0.1); }
+    .badge-amber { color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); background: rgba(245, 158, 11, 0.1); }
+    .badge-cyan { color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); background: rgba(6, 182, 212, 0.1); }
+    .badge-green { color: #34d399; border-color: rgba(52, 211, 153, 0.3); background: rgba(16, 185, 129, 0.1); }
+
+    h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+
+    header p {
+      color: var(--text-muted);
+      max-width: 720px;
+      margin: 0 auto;
+      font-size: 1.05rem;
+    }
+
+    .container {
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    /* Progress Widget */
+    .progress-widget {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+    }
+    .progress-bar-bg {
+      background: #1e2433;
+      border-radius: 9999px;
+      height: 10px;
+      overflow: hidden;
+      width: 100%;
+    }
+    .progress-bar-fill {
+      background: linear-gradient(90deg, var(--accent) 0%, var(--primary) 100%);
+      height: 100%;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* Strategy Comparison Grid */
+    .strategy-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 40px;
+    }
+    .strategy-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      position: relative;
+    }
+    .strategy-card.recommended {
+      border-color: var(--accent);
+      box-shadow: 0 0 20px rgba(245, 158, 11, 0.1);
+    }
+    .strategy-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .strategy-badge {
+      font-size: 0.65rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #000;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .strategy-desc {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+
+    /* Tabs & Content */
+    .module-nav {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 12px;
+      margin-bottom: 28px;
+    }
+    .module-tab {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .module-tab:hover {
+      color: #fff;
+      border-color: #3b4256;
+    }
+    .module-tab.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+    }
+
+    .test-section {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    .test-section.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .step-item {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .step-number {
+      width: 32px;
+      height: 32px;
+      background: #1e2433;
+      color: var(--cyan);
+      border: 1px solid var(--cyan);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+    .step-body {
+      flex: 1;
+    }
+    .step-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Checkbox item */
+    .checklist-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.03);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid #23293b;
+    }
+    .checklist-label input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: var(--success);
+      width: 15px;
+      height: 15px;
+    }
+
+    /* Code block */
+    .code-container {
+      background: var(--code-bg);
+      border: 1px solid #1a1e2b;
+      border-radius: 8px;
+      margin: 12px 0;
+      position: relative;
+    }
+    .code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 14px;
+      background: #10141f;
+      border-bottom: 1px solid #1a1e2b;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .copy-btn:hover {
+      background: var(--accent);
+      color: #000;
+    }
+    pre {
+      padding: 14px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
+
+    .alert {
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin: 16px 0;
+      font-size: 0.9rem;
+      border-left: 4px solid;
+    }
+    .alert-warning {
+      background: rgba(245, 158, 11, 0.08);
+      border-color: var(--accent);
+      color: #fde68a;
+    }
+    .alert-info {
+      background: rgba(6, 182, 212, 0.08);
+      border-color: var(--cyan);
+      color: #bae6fd;
+    }
+    .alert-danger {
+      background: rgba(220, 38, 38, 0.08);
+      border-color: var(--primary);
+      color: #fca5a5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 0.85rem;
+    }
+    th, td {
+      border: 1px solid var(--card-border);
+      padding: 10px 14px;
+      text-align: left;
+    }
+    th {
+      background: #10141f;
+      color: #fff;
+    }
+    tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 60px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="badge-bar">
+      <span class="badge badge-red">Nondies RFC Frontend</span>
+      <span class="badge badge-amber">DashCommerce Core</span>
+      <span class="badge badge-cyan">Cloudflare Tunnel & Kitesurf</span>
+      <span class="badge badge-green">100% Offline / Local Safe</span>
+    </div>
+    <h1>Comprehensive Local Testing Guide</h1>
+    <p>Complete step-by-step instructions for running, verifying, and testing the entire DashCommerce engine, regional payment gateways, pitchside POS kiosk, and Nondies RFC application on your local machine.</p>
+  </header>
+
+  <div class="container">
+
+    <!-- Progress Tracker -->
+    <div class="progress-widget">
+      <div class="progress-header">
+        <span>Local Verification Progress</span>
+        <span id="progress-percent">0% Completed (0/18 steps)</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- Strategy Section -->
+    <div class="card">
+      <h2 style="font-size:1.35rem; color:#fff; margin-bottom:12px;">Testing Strategy: Cloudflare Tunnel vs. Local Simulation</h2>
+      <p style="color:var(--text-muted); font-size:0.95rem; margin-bottom:20px;">
+        Since our target production runtime is Cloudflare Workers and Cloudflare Pages, how should we test locally? Here is the recommended multi-tier approach:
+      </p>
+
+      <div class="strategy-grid">
+        <div class="strategy-card">
+          <div class="strategy-title">
+            <span>Tier 1: Pure Local Edge</span>
+          </div>
+          <div class="strategy-desc">
+            Directly executes unit/integration tests and local dev servers (Node/workerd emulation) with zero internet connection.
+          </div>
+          <ul style="padding-left:20px; font-size:0.85rem; color:#cbd5e1; line-height:1.7;">
+            <li>Instant feedback (&lt;1s test cycles).</li>
+            <li>No external dependencies or accounts.</li>
+            <li>100% private: no data leaves your machine.</li>
+            <li>Runs POS offline IndexedDB tests.</li>
+          </ul>
+        </div>
+
+        <div class="strategy-card recommended">
+          <div class="strategy-title">
+            <span>Tier 2: Cloudflare Tunnel</span>
+            <span class="strategy-badge">Best for Gateways & Kitesurf</span>
+          </div>
+          <div class="strategy-desc">
+            Temporarily exposes your local port (e.g. 4330) over a secure, outbound-only Cloudflare Tunnel (<code>cloudflared</code>).
+          </div>
+          <ul style="padding-left:20px; font-size:0.85rem; color:#cbd5e1; line-height:1.7;">
+            <li><strong>Live Inbound Webhooks:</strong> Paystack &amp; PalPluss sandboxes post callbacks directly to your local server.</li>
+            <li><strong>Cloudflare Kitesurf &amp; Browser Run:</strong> Cloudflare edge browser isolates can connect directly to your tunneled URL.</li>
+            <li>Zero open firewall ports; instant teardown.</li>
+          </ul>
+        </div>
+
+        <div class="strategy-card">
+          <div class="strategy-title">
+            <span>Tier 3: Preview Worker</span>
+          </div>
+          <div class="strategy-desc">
+            Deploys to an isolated Cloudflare preview subdomain (e.g. <code>preview.nondies.workers.dev</code>) with disposable preview D1/KV bindings.
+          </div>
+          <ul style="padding-left:20px; font-size:0.85rem; color:#cbd5e1; line-height:1.7;">
+            <li>Final gate before handoff.</li>
+            <li>Strictly isolated from live apex/www routes.</li>
+            <li>Validates Cloudflare image resizing &amp; edge cache headers.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="alert alert-warning">
+        <strong>Strict Safety Rule:</strong> Never deploy to production or run commands targeting apex/www routes or live Nondies KV/D1 databases. All local and tunnel testing operates strictly on preview configurations.
+      </div>
+    </div>
+
+    <!-- Tabbed Navigation -->
+    <div class="module-nav">
+      <button class="module-tab active" onclick="switchTab('tab-dashcommerce')">1. DashCommerce &amp; Seam</button>
+      <button class="module-tab" onclick="switchTab('tab-gateways')">2. Gateways &amp; Webhooks</button>
+      <button class="module-tab" onclick="switchTab('tab-pos')">3. Pitchside POS Kiosk</button>
+      <button class="module-tab" onclick="switchTab('tab-nondies')">4. Nondies RFC Frontend</button>
+      <button class="module-tab" onclick="switchTab('tab-tunnel')">5. Tunnel &amp; Kitesurf</button>
+      <button class="module-tab" onclick="switchTab('tab-security')">6. Security &amp; Leaks</button>
+    </div>
+
+    <!-- MODULE 1: DashCommerce Core -->
+    <div id="tab-dashcommerce" class="test-section active">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 1: DashCommerce Core &amp; PR #18 Seam Verification</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          Verifies the <code>PaymentProvider</code> interface, separation of <code>checkoutReference</code> vs <code>paymentReference</code>, event identity, mandatory refund IDs, and currency checks.
+        </p>
+
+        <!-- Step 1.1 -->
+        <div class="step-item">
+          <div class="step-number">1</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run Monorepo Unit &amp; Integration Tests (186 tests)</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Executes all unit, route integration, registry, and mock provider tests using Bun.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>cd /home/moseti/Projects/DashCommerce/.worktrees/FIK-CORE-dashcommerce
+bun test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: <code>186 pass, 0 fail</code> across 26 test files (~850ms).</p>
+          </div>
+        </div>
+
+        <!-- Step 1.2 -->
+        <div class="step-item">
+          <div class="step-number">2</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Validate Full Monorepo Typechecking</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Ensures no type regressions across <code>core</code>, <code>paystack</code>, <code>palpluss</code>, <code>pos</code>, and <code>starter</code>.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun run typecheck</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: Clean exit code 0, 0 errors across all 6 workspaces.</p>
+          </div>
+        </div>
+
+        <!-- Step 1.3 -->
+        <div class="step-item">
+          <div class="step-number">3</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Compile Monorepo Packages</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Builds the distribution bundles and type definitions using <code>tsdown</code>.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun run build</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: Builds <code>dist/</code> for all packages cleanly.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- MODULE 2: Gateways & Webhooks -->
+    <div id="tab-gateways" class="test-section">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 2: Regional Gateways &amp; Webhooks (Paystack &amp; PalPluss M-Pesa)</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          Verifies external provider implementations, webhook signature verification (HMAC-SHA512), asynchronous pending checkouts, and polling.
+        </p>
+
+        <!-- Step 2.1 -->
+        <div class="step-item">
+          <div class="step-number">4</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Test Paystack Provider in Isolation</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Verifies Paystack checkout redirect, webhook parsing, HMAC-SHA512 signature security, and refund idempotency.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun test packages/paystack/test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: All Paystack tests pass, confirming reference separation and event identity.</p>
+          </div>
+        </div>
+
+        <!-- Step 2.2 -->
+        <div class="step-item">
+          <div class="step-number">5</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Test PalPluss M-Pesa STK &amp; B2C Payouts</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Verifies M-Pesa STK push payload validation, KES currency enforcement, server-to-server reconciliation, and payout idempotency.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun test packages/palpluss/test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: All PalPluss tests pass, verifying non-KES rejection and pending checkout semantics.</p>
+          </div>
+        </div>
+
+        <!-- Step 2.3 -->
+        <div class="step-item">
+          <div class="step-number">6</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Test Asynchronous Order Status Polling Island</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">
+              Launches the frontend and verifies the order summary island with backoff polling (2s &rarr; 5s &rarr; 10s up to 2m) and background tab pausing.
+            </p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (Nondies Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>cd /home/moseti/Projects/Nondies-RFC/main-integration/.worktrees/FIK-NONDIES-frontend
+npm run dev -- --port 4330</code></pre>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem; margin-top:8px;">
+              Open in browser: <code style="color:var(--cyan);">http://localhost:4330/thank-you/test-draft-123</code>. Switch to another tab to confirm polling suspends, and click "Check Payment Status" to verify manual refresh.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- MODULE 3: POS Kiosk -->
+    <div id="tab-pos" class="test-section">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 3: Pitchside Offline POS Kiosk Verification</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          Verifies the staff sales terminal at <code>/pos</code>, offline-first IndexedDB ledger, cash tenders, change calculation, and simulated 58mm thermal receipts.
+        </p>
+
+        <!-- Step 3.1 -->
+        <div class="step-item">
+          <div class="step-number">7</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run POS Engine Unit &amp; Transport Tests</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Tests multi-tab fencing, offline stock allocation, tender rules, and ESC/POS printer byte formatting.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun test packages/pos/test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: 10/10 tests pass, verifying no drawer kicks on reprint and barcode scanner keyboard wedge handling.</p>
+          </div>
+        </div>
+
+        <!-- Step 3.2 -->
+        <div class="step-item">
+          <div class="step-number">8</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Open the Pitchside Kiosk UI in Browser</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Ensure Nondies dev server is running on port 4330 and navigate to the staff kiosk.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Browser Address Bar</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>http://localhost:4330/pos</code></pre>
+            </div>
+            <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
+              <li>Click on items (e.g. <em>1st XV Home Replica Jersey</em>, <em>Red Lion Heritage Cap</em>).</li>
+              <li>Verify quantity adjustments and tax subtotaling.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Step 3.3 -->
+        <div class="step-item">
+          <div class="step-number">9</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Test Cash Tender &amp; Change Computation</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Select Cash tender, input an amount greater than the total, and verify exact change rendering.</p>
+            <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
+              <li>Example: Total KES 4,500. Enter KES 5,000.</li>
+              <li>Verify: Change Due displays <strong>KES 500.00</strong>.</li>
+              <li>Click <strong>Complete Cash Sale</strong>.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Step 3.4 -->
+        <div class="step-item">
+          <div class="step-number">10</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Inspect Offline Ledger in Chrome DevTools</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Open Chrome DevTools (<code>F12</code>) &rarr; <strong>Application</strong> tab &rarr; <strong>Storage</strong> &rarr; <strong>IndexedDB</strong>.</p>
+            <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
+              <li>Locate the POS database <code>nondies_pos_ledger</code>.</li>
+              <li>Inspect the recorded sale object: verify sequence number, timestamp, operator ID, and immutable item snapshots.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Step 3.5 -->
+        <div class="step-item">
+          <div class="step-number">11</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Simulate Pitchside Network Outage</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">In DevTools &rarr; <strong>Network</strong> tab, change throttling dropdown from <em>No throttling</em> to <strong>Offline</strong>.</p>
+            <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
+              <li>Execute another cash sale.</li>
+              <li>Verify the terminal completes the sale smoothly and flags status as <em>Pending Sync</em>.</li>
+              <li>Toggle Network back to <strong>No throttling</strong> and verify automatic reconnection sync.</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- MODULE 4: Nondies Frontend -->
+    <div id="tab-nondies" class="test-section">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 4: Nondies RFC Frontend &amp; WTL Boundary Verification</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          Verifies all 26 Astro routes, domain repositories, responsive mobile viewports, accessibility, and the WTL decoupling seam.
+        </p>
+
+        <!-- Step 4.1 -->
+        <div class="step-item">
+          <div class="step-number">12</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run Nondies Automated Test Suite (100 tests)</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Runs node/tsx test runner validating repositories, sports schemes, and security tokens.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (Nondies Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>cd /home/moseti/Projects/Nondies-RFC/main-integration/.worktrees/FIK-NONDIES-frontend
+npm test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: <code>100 pass, 0 fail</code> (0 cancelled, 0 skipped).</p>
+          </div>
+        </div>
+
+        <!-- Step 4.2 -->
+        <div class="step-item">
+          <div class="step-number">13</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run Astro TypeScript Diagnostic Check</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Checks template types across all 91 Astro files.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (Nondies Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>npm run typecheck</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: <code>0 errors, 0 warnings, 4 hints</code> across 91 files.</p>
+          </div>
+        </div>
+
+        <!-- Step 4.3 -->
+        <div class="step-item">
+          <div class="step-number">14</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Verify Core User Routes in Browser</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Browse to each route to confirm clean SSR rendering via domain repositories:</p>
+            <table>
+              <thead>
+                <tr><th>Route</th><th>Domain Repository</th><th>Verification Points</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>/</code></td><td>SiteRepository &amp; SportsRepository</td><td>Hero countdown, latest news, league preview.</td></tr>
+                <tr><td><code>/fixtures</code></td><td>SportsRepository</td><td>15s &amp; Sevens fixtures, venue, kickoff times (EAT).</td></tr>
+                <tr><td><code>/standings</code></td><td>SportsRepository</td><td>Bonus points scheme, goal difference, win/draw/loss.</td></tr>
+                <tr><td><code>/squad</code></td><td>SportsRepository</td><td>Forwards, backs, coaching staff, player cards.</td></tr>
+                <tr><td><code>/store</code></td><td>CommerceRepository</td><td>Apparel, equipment, prices formatted in KES.</td></tr>
+                <tr><td><code>/club/red-lion</code></td><td>EditorialRepository</td><td>Club history, traditions, clubhouse info.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Step 4.4 -->
+        <div class="step-item">
+          <div class="step-number">15</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Responsive &amp; Accessibility Audit</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Open Chrome DevTools Device Mode (<code>Ctrl+Shift+M</code>):</p>
+            <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
+              <li><strong>360px Viewport:</strong> Verify no horizontal overflow; navigation collapses to mobile hamburger.</li>
+              <li><strong>Tap Targets:</strong> Verify buttons and links have &ge;44px bounding boxes.</li>
+              <li><strong>Footer Shell:</strong> Confirm single social group with <code>rel="noopener noreferrer"</code> and the <code>Site by Fikanova &rarr;</code> attribution link.</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- MODULE 5: Cloudflare Tunnel & Kitesurf -->
+    <div id="tab-tunnel" class="test-section">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 5: Cloudflare Tunnel, Inbound Webhooks &amp; Kitesurf / Browser Run</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          How to connect Cloudflare's serverless browser isolates (Kitesurf) and live sandbox webhooks to your local dev environment.
+        </p>
+
+        <!-- Step 5.1 -->
+        <div class="step-item">
+          <div class="step-number">16</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Start Cloudflare Quick Tunnel</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">
+              With your local frontend running on port 4330, open a second terminal and start a temporary, authenticated-free quick tunnel:
+            </p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (Second Tab)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>cloudflared tunnel --url http://localhost:4330</code></pre>
+            </div>
+            <p style="font-size:0.85rem; color:var(--cyan); margin-top:6px;">
+              Copy the resulting HTTPS URL output (e.g. <code>https://nondies-local-random.trycloudflare.com</code>).
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 5.2 -->
+        <div class="step-item">
+          <div class="step-number">17</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run Automated Audit via Kitesurf / Browser Run</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">
+              Use Cloudflare's Browser Run API with the <code>?browser=kitesurf</code> flag to capture an edge screenshot and verify SSR isolate compatibility:
+            </p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (API Execution)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>curl -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/browser-run/screenshot?browser=kitesurf" \
+  -H "Authorization: Bearer $CF_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://nondies-local-random.trycloudflare.com/fixtures"}' \
+  --output "kitesurf_fixtures_audit.png"</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--text-muted);">
+              Alternatively, open the Cloudflare Kitesurf Playground and paste your tunneled URL to inspect DOM tree rendering and WebAssembly isolate memory footprint.
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 5.3 -->
+        <div class="step-item">
+          <div class="step-number">18</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Receive Inbound Gateway Webhooks through Tunnel</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">
+              In your Paystack or PalPluss sandbox dashboard, configure the webhook callback URL to:
+              <br><code style="color:var(--cyan);">https://nondies-local-random.trycloudflare.com/api/dashcommerce/webhook</code>
+            </p>
+            <p style="color:var(--text-muted); font-size:0.85rem; margin-top:8px;">
+              Trigger a test webhook from the provider portal. Watch your local terminal log the request, verify the cryptographic signature, and update the order state.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- MODULE 6: Security & Leaks -->
+    <div id="tab-security" class="test-section">
+      <div class="card">
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 6: Security &amp; Leak Prevention</h3>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+          Runs mandatory automated scans to ensure zero production keys, secrets, or PII are staged or present in commit histories.
+        </p>
+
+        <div class="step-item">
+          <div class="step-number">19</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Run Betterleaks Pre-Flight Git Scan</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Scans all git commits on your feature branch for leaked API keys, tokens, or credentials.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (Nondies Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>betterleaks git --log-opts="928e686..HEAD" --redact</code></pre>
+            </div>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>betterleaks git --log-opts="HEAD~5..HEAD" --redact</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: <code>no leaks found</code>.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Quick Reference Card -->
+    <div class="card" style="border-color:#334155;">
+      <h3 style="color:#fff; font-size:1.1rem; margin-bottom:12px;">Port &amp; Process Troubleshooting</h3>
+      <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; line-height:1.7;">
+        <li><strong>Port 4321 Conflict:</strong> If port 4321 is occupied by the background live-site dev process, pass <code>-- --port 4330</code> to avoid collisions.</li>
+        <li><strong>Zero GitHub Pushes:</strong> Do not run <code>git push</code> until you have reviewed all test evidence locally.</li>
+        <li><strong>WTL Technical Handoff:</strong> When WTL provides their API schema, only <code>src/lib/repositories/sports.ts</code> is updated. All Astro page templates stay untouched.</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <footer>
+    <p>Nondies RFC &amp; DashCommerce Engineering Runbook &bull; Fikanova Limited &bull; Strictly Local Artifact</p>
+  </footer>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.module-tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.test-section').forEach(sec => sec.classList.remove('active'));
+
+      event.target.classList.add('active');
+      const targetSec = document.getElementById(tabId);
+      if (targetSec) targetSec.classList.add('active');
+    }
+
+    function copyCode(btn) {
+      const code = btn.closest('.code-container').querySelector('code').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        const orig = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.background = '#10b981';
+        btn.style.color = '#fff';
+        setTimeout(() => {
+          btn.innerText = orig;
+          btn.style.background = '';
+          btn.style.color = '';
+        }, 1800);
+      });
+    }
+
+    function updateProgress() {
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      const total = checkboxes.length;
+      let checked = 0;
+      checkboxes.forEach(cb => { if (cb.checked) checked++; });
+
+      const pct = Math.round((checked / total) * 100);
+      document.getElementById('progress-fill').style.width = pct + '%';
+      document.getElementById('progress-percent').innerText = `${pct}% Completed (${checked}/${total} steps)`;
+
+      // Save state to localStorage
+      const state = Array.from(checkboxes).map(cb => cb.checked);
+      localStorage.setItem('nondies_test_checklist', JSON.stringify(state));
+    }
+
+    // Restore state
+    window.addEventListener('DOMContentLoaded', () => {
+      const saved = localStorage.getItem('nondies_test_checklist');
+      if (saved) {
+        try {
+          const state = JSON.parse(saved);
+          const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+          checkboxes.forEach((cb, i) => {
+            if (state[i] !== undefined) cb.checked = state[i];
+          });
+          updateProgress();
+        } catch(e) {}
+      }
+    });
+  </script>
+</body>
+</html>
