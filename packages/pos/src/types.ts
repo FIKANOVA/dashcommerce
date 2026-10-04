@@ -19,15 +19,67 @@ export interface PosTenderLine {
 	metadata?: Record<string, unknown>;
 }
 
+/**
+ * Product & line item classifications supported across all business types.
+ */
+export type PosItemType =
+	| "merchandise"  // Physical goods with inventory (retail, apparel, books)
+	| "hospitality"  // Food & Beverage, bar, cafe, restaurant items
+	| "ticket"       // Event admissions, gate passes, wristbands
+	| "membership"   // Subscriptions, member dues, annual registrations
+	| "service"      // Appointments, repairs, pitch hire, coaching
+	| "custom";      // On-the-fly custom price line items
+
+/**
+ * Item modifiers/add-ons for hospitality, customization, and service businesses
+ */
+export interface PosItemModifier {
+	id: string;
+	name: string;
+	price: number; // minor units
+}
+
 export interface PosLineItem {
 	productId: string;
 	variantId?: string;
 	title: string;
 	sku?: string;
+	itemType?: PosItemType;
+	notes?: string; // Special instructions, customer name, table info
+	modifiers?: PosItemModifier[];
 	quantity: number;
 	unitPrice: number; // minor units
 	tax: number; // minor units
 	lineSubtotal: number; // minor units (quantity * unitPrice)
+}
+
+/**
+ * Operating mode and profile for any business type running DashCommerce POS.
+ */
+export type PosBusinessMode =
+	| "retail"           // Physical goods, barcode-driven, stock allocations
+	| "hospitality"      // Food & Beverage, bars, cafes, quick service, tabs
+	| "ticketing"        // Event gates, admissions, box office, pass issuing
+	| "services"         // Professional services, rentals, custom booking
+	| "multi_department"; // Combined operations (e.g. club with bar, gate, & shop)
+
+export interface PosBusinessProfile {
+	mode: PosBusinessMode;
+	storeName: string;
+	locationId: string;
+	taxNumber?: string;
+	currency: string;
+	supportedTenders: PosTenderType[];
+	allowCustomItems: boolean;
+	allowSplitTenders: boolean;
+	features: {
+		barcodeScanning?: boolean;
+		stockAllocation?: boolean;
+		kitchenPrinting?: boolean;
+		tableTracking?: boolean;
+		ticketValidation?: boolean;
+		memberLookup?: boolean;
+	};
 }
 
 export type PosSaleStatus = "completed" | "draft" | "voided";
