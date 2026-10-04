@@ -404,7 +404,7 @@
     <div class="progress-widget">
       <div class="progress-header">
         <span>Local Verification Progress</span>
-        <span id="progress-percent">0% Completed (0/24 steps)</span>
+        <span id="progress-percent">0% Completed (0/26 steps)</span>
       </div>
       <div class="progress-bar-bg">
         <div class="progress-bar-fill" id="progress-fill"></div>
@@ -556,9 +556,9 @@ bun test</code></pre>
     <!-- MODULE 2: Gateways & Webhooks -->
     <div id="tab-gateways" class="test-section">
       <div class="card">
-        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 2: Regional Gateways &amp; Webhooks (Paystack &amp; PalPluss M-Pesa)</h3>
+        <h3 style="color:#fff; font-size:1.2rem; margin-bottom:14px;">Module 2: Regional Gateways &amp; Webhooks (Paystack, PalPluss, Pesapal &amp; PesaLink)</h3>
         <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
-          Verifies external provider implementations, webhook signature verification (HMAC-SHA512), asynchronous pending checkouts, and polling.
+          Verifies external provider implementations, webhook signature verification (HMAC-SHA512/IPN/IPSL), asynchronous pending checkouts, and polling across all four regional processors.
         </p>
 
         <!-- Step 2.1 -->
@@ -606,6 +606,46 @@ bun test</code></pre>
           <div class="step-number">6</div>
           <div class="step-body">
             <div class="step-title">
+              <span>Test Pesapal v3.0 REST Gateway</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Verifies token caching, SubmitOrder payload formatting, IPN webhook parsing, status reconciliation, and currency capability.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun test packages/pesapal/test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: All 6 Pesapal tests pass, validating token retrieval and order tracking ID mapping.</p>
+          </div>
+        </div>
+
+        <!-- Step 2.4 -->
+        <div class="step-item">
+          <div class="step-number">7</div>
+          <div class="step-body">
+            <div class="step-title">
+              <span>Test PesaLink 24/7 IPSL Interbank Rails</span>
+              <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.85rem;">Verifies KES currency enforcement, interbank routing reference generation, IPSL switch settlement parsing, and batch reversal handling.</p>
+            <div class="code-container">
+              <div class="code-header">
+                <span>Terminal (DashCommerce Worktree)</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre><code>bun test packages/pesalink/test</code></pre>
+            </div>
+            <p style="font-size:0.8rem; color:var(--success);">Expected Result: All 6 PesaLink tests pass, confirming bank code routing and settlement verification.</p>
+          </div>
+        </div>
+
+        <!-- Step 2.5 -->
+        <div class="step-item">
+          <div class="step-number">8</div>
+          <div class="step-body">
+            <div class="step-title">
               <span>Test Asynchronous Order Status Polling Island</span>
               <label class="checklist-label"><input type="checkbox" onchange="updateProgress(this)"> Mark Passed</label>
             </div>
@@ -639,7 +679,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 3.1 -->
         <div class="step-item">
-          <div class="step-number">7</div>
+          <div class="step-number">9</div>
           <div class="step-body">
             <div class="step-title">
               <span>Run POS Engine Unit &amp; Transport Tests (16 tests)</span>
@@ -659,7 +699,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 3.2 -->
         <div class="step-item">
-          <div class="step-number">8</div>
+          <div class="step-number">10</div>
           <div class="step-body">
             <div class="step-title">
               <span>Test Multi-Department Vertical Filtering</span>
@@ -677,7 +717,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 3.3 -->
         <div class="step-item">
-          <div class="step-number">9</div>
+          <div class="step-number">11</div>
           <div class="step-body">
             <div class="step-title">
               <span>Test "+ Quick Item" Dynamic On-the-Fly Entry</span>
@@ -694,7 +734,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 3.4 -->
         <div class="step-item">
-          <div class="step-number">10</div>
+          <div class="step-number">12</div>
           <div class="step-body">
             <div class="step-title">
               <span>Test Cash Tender, Change &amp; Receipt</span>
@@ -711,7 +751,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 3.5 -->
         <div class="step-item">
-          <div class="step-number">11</div>
+          <div class="step-number">13</div>
           <div class="step-body">
             <div class="step-title">
               <span>Simulate Offline Outage &amp; DevTools Inspection</span>
@@ -739,7 +779,7 @@ npm run dev -- --port 4330</code></pre>
 
         <!-- Step 4.1 -->
         <div class="step-item">
-          <div class="step-number">12</div>
+          <div class="step-number">14</div>
           <div class="step-body">
             <div class="step-title">
               <span>Run Nondies Automated Test Suite (100 tests)</span>
@@ -760,7 +800,7 @@ npm test</code></pre>
 
         <!-- Step 4.2 -->
         <div class="step-item">
-          <div class="step-number">13</div>
+          <div class="step-number">15</div>
           <div class="step-body">
             <div class="step-title">
               <span>Run Astro TypeScript Diagnostic Check</span>
@@ -780,7 +820,7 @@ npm test</code></pre>
 
         <!-- Step 4.3 -->
         <div class="step-item">
-          <div class="step-number">14</div>
+          <div class="step-number">16</div>
           <div class="step-body">
             <div class="step-title">
               <span>Verify Core User Routes in Browser</span>
@@ -805,7 +845,7 @@ npm test</code></pre>
 
         <!-- Step 4.4 -->
         <div class="step-item">
-          <div class="step-number">15</div>
+          <div class="step-number">17</div>
           <div class="step-body">
             <div class="step-title">
               <span>Responsive &amp; Accessibility Audit</span>
@@ -833,7 +873,7 @@ npm test</code></pre>
 
         <!-- Step 5.1 -->
         <div class="step-item">
-          <div class="step-number">16</div>
+          <div class="step-number">18</div>
           <div class="step-body">
             <div class="step-title">
               <span>Start Cloudflare Quick Tunnel</span>
@@ -857,7 +897,7 @@ npm test</code></pre>
 
         <!-- Step 5.2 -->
         <div class="step-item">
-          <div class="step-number">17</div>
+          <div class="step-number">19</div>
           <div class="step-body">
             <div class="step-title">
               <span>Run Automated Audit via Kitesurf / Browser Run</span>
@@ -882,7 +922,7 @@ npm test</code></pre>
 
         <!-- Step 5.3 -->
         <div class="step-item">
-          <div class="step-number">18</div>
+          <div class="step-number">20</div>
           <div class="step-body">
             <div class="step-title">
               <span>Receive Inbound Gateway Webhooks through Tunnel</span>
@@ -910,7 +950,7 @@ npm test</code></pre>
         </p>
 
         <div class="step-item">
-          <div class="step-number">19</div>
+          <div class="step-number">21</div>
           <div class="step-body">
             <div class="step-title">
               <span>Run Betterleaks Pre-Flight Git Scan</span>
@@ -950,12 +990,12 @@ npm test</code></pre>
         </p>
 
         <div class="alert alert-purple">
-          <strong>Upstream Branch Isolation Guarantee:</strong> PR #18 contains strictly the core seam fixes, route wiring, CI fix, and Paystack proof. Regional gateways (PalPluss, POS, Pesapal) remain on your local/internal branch (<code>feat/fik-core-engine</code>) and will <strong>NOT</strong> be pushed to the upstream repository.
+          <strong>Upstream Branch Isolation Guarantee:</strong> PR #18 contains strictly the core seam fixes, route wiring, CI fix, and Paystack proof. Regional gateways (PalPluss, POS, Pesapal, PesaLink) remain on your local/internal branch (<code>feat/fik-core-engine</code>) and will <strong>NOT</strong> be pushed to the upstream repository.
         </div>
 
         <!-- Step 7.1 -->
         <div class="step-item">
-          <div class="step-number step-purple">20</div>
+          <div class="step-number step-purple">22</div>
           <div class="step-body">
             <div class="step-title">
               <span>Verify PR #18 Branch Isolation</span>
@@ -980,7 +1020,7 @@ git log --oneline origin/main..feat/payment-provider-interface</code></pre>
 
         <!-- Step 7.2 -->
         <div class="step-item">
-          <div class="step-number step-purple">21</div>
+          <div class="step-number step-purple">23</div>
           <div class="step-body">
             <div class="step-title">
               <span>Push PR #18 Branch to GitHub</span>
@@ -1004,7 +1044,7 @@ git log --oneline origin/main..feat/payment-provider-interface</code></pre>
 
         <!-- Step 7.3 -->
         <div class="step-item">
-          <div class="step-number step-purple">22</div>
+          <div class="step-number step-purple">24</div>
           <div class="step-body">
             <div class="step-title">
               <span>Monitor Blocking GitHub Actions CI Workflow</span>
@@ -1022,7 +1062,7 @@ git log --oneline origin/main..feat/payment-provider-interface</code></pre>
 
         <!-- Step 7.4 -->
         <div class="step-item">
-          <div class="step-number step-purple">23</div>
+          <div class="step-number step-purple">25</div>
           <div class="step-body">
             <div class="step-title">
               <span>Post Formal Maintainer Review Response Comment</span>
@@ -1044,7 +1084,7 @@ git log --oneline origin/main..feat/payment-provider-interface</code></pre>
 
         <!-- Step 7.5 -->
         <div class="step-item">
-          <div class="step-number step-purple">24</div>
+          <div class="step-number step-purple">26</div>
           <div class="step-body">
             <div class="step-title">
               <span>Maintainer Merge &amp; Downstream Sync</span>
@@ -1055,7 +1095,7 @@ git log --oneline origin/main..feat/payment-provider-interface</code></pre>
             </p>
             <ul style="font-size:0.85rem; color:#cbd5e1; padding-left:20px; margin-top:8px; line-height:1.6;">
               <li>Pull upstream main: <code>git fetch upstream &amp;&amp; git rebase upstream/main</code> on your internal branch.</li>
-              <li>Your internal packages (PalPluss, POS, Pesapal) continue building against the officially merged core seam!</li>
+              <li>Your internal packages (PalPluss, POS, Pesapal, PesaLink) continue building against the officially merged core seam!</li>
             </ul>
           </div>
         </div>
