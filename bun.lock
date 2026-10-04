@@ -81,6 +81,30 @@
         "@dashcommerce/core": "workspace:*",
       },
     },
+    "packages/pesalink": {
+      "name": "@dashcommerce/pesalink",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@dashcommerce/core": "workspace:*",
+        "tsdown": "^0.20.0",
+        "typescript": "^5.9.3",
+      },
+      "peerDependencies": {
+        "@dashcommerce/core": "workspace:*",
+      },
+    },
+    "packages/pesapal": {
+      "name": "@dashcommerce/pesapal",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@dashcommerce/core": "workspace:*",
+        "tsdown": "^0.20.0",
+        "typescript": "^5.9.3",
+      },
+      "peerDependencies": {
+        "@dashcommerce/core": "workspace:*",
+      },
+    },
     "packages/pos": {
       "name": "@dashcommerce/pos",
       "version": "0.1.0",
@@ -304,6 +328,10 @@
     "@dashcommerce/palpluss": ["@dashcommerce/palpluss@workspace:packages/palpluss"],
 
     "@dashcommerce/paystack": ["@dashcommerce/paystack@workspace:packages/paystack"],
+
+    "@dashcommerce/pesalink": ["@dashcommerce/pesalink@workspace:packages/pesalink"],
+
+    "@dashcommerce/pesapal": ["@dashcommerce/pesapal@workspace:packages/pesapal"],
 
     "@dashcommerce/pos": ["@dashcommerce/pos@workspace:packages/pos"],
 

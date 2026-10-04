@@ -1,0 +1,30 @@
+{
+  "name": "@dashcommerce/pesalink",
+  "version": "0.1.0",
+  "description": "PesaLink PaymentProvider for @dashcommerce/core — real-time 24/7 interbank clearing (IPSL Kenya) for direct account and mobile rail payments",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@dashcommerce/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@dashcommerce/core": "workspace:*",
+    "tsdown": "^0.20.0",
+    "typescript": "^5.9.3"
+  }
+}
