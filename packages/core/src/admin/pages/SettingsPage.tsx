@@ -699,8 +699,8 @@ function StickyBar({
 				bottom: 0,
 				left: 0,
 				right: 0,
-				background: "#fff",
-				borderTop: "1px solid #e4e4e7",
+				background: "var(--dc-card-bg, #fff)",
+				borderTop: "1px solid var(--dc-border, #e4e4e7)",
 				padding: "0.75rem 1rem",
 				display: "flex",
 				alignItems: "center",
@@ -711,7 +711,7 @@ function StickyBar({
 				marginTop: "auto",
 			}}
 		>
-			<span style={{ color: isDirty ? "#c08a00" : "#888", fontSize: "0.9em" }}>
+			<span style={{ color: isDirty ? "#854d0e" : "var(--dc-text-subtle, #52525b)", fontSize: "0.9em" }}>
 				{saving
 					? "Saving…"
 					: isDirty

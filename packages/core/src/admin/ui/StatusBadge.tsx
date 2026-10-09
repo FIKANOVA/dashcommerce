@@ -1,5 +1,5 @@
 const COLORS: Record<string, string> = {
-	pending: "#8c7b00",
+	pending: "#78350f",
 	processing: "#0066cc",
 	"on-hold": "#8b5a2b",
 	completed: "#2d7a3a",
