@@ -67,6 +67,12 @@ export default defineConfig({
 	],
 	devToolbar: { enabled: false },
 	vite: {
+		optimizeDeps: {
+			include: [
+				"@stripe/react-stripe-js",
+				"@stripe/stripe-js",
+			],
+		},
 		build: {
 			rollupOptions: {
 				// Externalize Cloudflare Workers runtime modules when building for Node.
