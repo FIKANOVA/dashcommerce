@@ -52,6 +52,16 @@ import { reviewsPublicRoutes } from "./routes/reviews-public";
 import { subscriptionsPublicRoutes } from "./routes/subscriptions-public";
 import { webhookRoutes } from "./routes/webhook";
 import { DASHCOMMERCE_STORAGE } from "./storage-collections";
+import { getPaymentProvider, registerPaymentProvider } from "./payment-provider/registry";
+import { createMockPaymentProvider } from "./payment-provider/mock-provider";
+
+if (!getPaymentProvider("mock")) {
+	try {
+		registerPaymentProvider(createMockPaymentProvider({ id: "mock" }));
+	} catch {
+		// already registered
+	}
+}
 
 const DEFAULT_CAPABILITIES: PluginCapability[] = [
 	"content:read",

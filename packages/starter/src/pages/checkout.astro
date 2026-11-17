@@ -7,12 +7,15 @@ import HostedCheckoutForm from "@dashcommerce/core/astro/components/HostedChecko
 
 export const prerender = false;
 
+const paymentProviderSetting = (await getPluginSetting("dashcommerce", "paymentProvider")) as string | null | undefined;
+const paymentProvider = paymentProviderSetting ?? "stripe";
+
 const publishableKey = (await getPluginSetting("dashcommerce", "stripePublishableKey")) as string | null | undefined;
 const secretKey      = (await getPluginSetting("dashcommerce", "stripeSecretKey"))      as string | null | undefined;
 const webhookSecret  = (await getPluginSetting("dashcommerce", "stripeWebhookSecret"))  as string | null | undefined;
-// `checkoutMode` controls whether we redirect to Stripe's hosted page
-// (default — lower PCI scope, simpler UI) or render Stripe Elements
-// on-site. Publishable key is only required for the embedded flow.
+// `checkoutMode` controls whether we redirect to the provider's hosted page
+// (default — lower PCI scope, simpler UI) or render embedded Elements
+// on-site.
 const checkoutModeSetting = (await getPluginSetting("dashcommerce", "checkoutMode")) as
   | "hosted"
   | "embedded"
@@ -21,13 +24,15 @@ const checkoutModeSetting = (await getPluginSetting("dashcommerce", "checkoutMod
 const checkoutMode: "hosted" | "embedded" = checkoutModeSetting ?? "hosted";
 
 const missingKeys: string[] = [];
-if (!secretKey)                                   missingKeys.push("stripeSecretKey");
-if (checkoutMode === "embedded" && !publishableKey) missingKeys.push("stripePublishableKey");
-if (!webhookSecret)                                missingKeys.push("stripeWebhookSecret");
+if (paymentProvider === "stripe") {
+  if (!secretKey)                                   missingKeys.push("stripeSecretKey");
+  if (checkoutMode === "embedded" && !publishableKey) missingKeys.push("stripePublishableKey");
+  if (!webhookSecret)                                missingKeys.push("stripeWebhookSecret");
+}
 
 const canCheckout = missingKeys.length === 0;
 
-// Show a "payment canceled" banner when the customer hit Stripe's back
+// Show a "payment canceled" banner when the customer hit the provider's back
 // button and landed back here (`success_url`/`cancel_url` on the
 // Checkout Session routes them to this page with `?canceled=1`).
 const canceled = Astro.url.searchParams.get("canceled") === "1";
@@ -48,7 +53,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
       <h1 class="co-title">Checkout</h1>
       <p class="co-subtitle">
         <span class="co-secure-icon" aria-hidden="true">🔒</span>
-        Secure · Encrypted · Stripe-powered
+        Secure · Encrypted · {paymentProvider === "paystack" ? "Paystack (Card & M-Pesa)" : paymentProvider === "mock" ? "Mock Sandbox Testing" : "Stripe-powered"}
       </p>
     </div>
   </div>
@@ -60,14 +65,13 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
 
       {!canCheckout && (
         <div class="co-misconfig" role="alert">
-          <strong>⚠ Stripe is not configured</strong>
+          <strong>⚠ Payment processor ({paymentProvider}) is not configured</strong>
           <p>
             The following settings are missing:
             <code>{missingKeys.join(", ")}</code>.
           </p>
           <p>
-            Open <a href="/_emdash/admin/plugins/dashcommerce/settings">DashCommerce settings</a> to add them.
-            If using <code>stripe listen</code>, paste the <code>whsec_…</code> secret into <code>stripeWebhookSecret</code>.
+            Open <a href="/_emdash/admin/plugins/dashcommerce/settings">DashCommerce settings</a> to configure API keys or switch to Mock provider for local checkout.
           </p>
         </div>
       )}

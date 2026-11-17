@@ -47,6 +47,7 @@ import {
 	validateSettingsKey,
 } from "../settings/schema";
 import { normalizeCurrencyList } from "../data/currencies";
+import { listPaymentProviders } from "../payment-provider/registry";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -1836,7 +1837,11 @@ export const adminApiRoutes = {
 					values[key] = v ?? null;
 				}
 			}
-			return json({ ...values, _secrets: secrets });
+			const providers = listPaymentProviders().map((p) => ({
+				id: p.id,
+				label: p.label,
+			}));
+			return json({ ...values, _secrets: secrets, _providers: providers });
 		},
 	},
 

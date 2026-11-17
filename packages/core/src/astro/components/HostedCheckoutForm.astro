@@ -31,7 +31,7 @@ const { digitalOnly = false } = Astro.props;
         <span class="hc-step-num">1</span>
         <h2 class="hc-step-title">Where does this ship to?</h2>
       </div>
-      <p class="hc-step-hint">Enter your country and postal code — we'll show available shipping options. Stripe collects your full address on the next page.</p>
+      <p class="hc-step-hint">Enter your country and postal code — we'll show available shipping options. The payment processor collects your full address securely on the next page.</p>
 
       <form id="hc-location-form" class="hc-form">
         <div class="hc-row-2">
@@ -69,13 +69,12 @@ const { digitalOnly = false } = Astro.props;
       <h2 class="hc-step-title">Pay securely</h2>
     </div>
     <p class="hc-step-hint">
-      You'll be redirected to Stripe to enter your email, {digitalOnly ? "billing address, " : "full address, "}
-      and card details. We never see your card.
+      You'll be redirected to the secure payment checkout to complete payment {digitalOnly ? "(billing address and details)" : "(full address and details)"}. We never see or store your payment credentials.
     </p>
     <p id="hc-pay-error" class="hc-error" role="alert"></p>
     <button id="hc-pay-btn" type="button" class="btn-primary hc-submit" disabled={!digitalOnly}>
       <span class="hc-lock" aria-hidden="true">🔒</span>
-      Pay with Stripe →
+      Pay securely →
     </button>
   </div>
 </section>

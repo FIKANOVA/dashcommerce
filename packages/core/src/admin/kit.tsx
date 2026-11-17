@@ -71,7 +71,17 @@ function pluginRoute(path: string): string {
  */
 async function parse<T>(res: Response): Promise<T> {
 	if (!res.ok) {
-		await throwResponseError(res, `Request failed with ${res.status}`);
+		let body: Record<string, unknown> | null = null;
+		try {
+			body = (await res.json()) as Record<string, unknown>;
+		} catch {
+			// ignore non-json error responses
+		}
+		const msg =
+			(typeof body?.error === "string" ? body.error : (body?.error as any)?.message) ||
+			`Request failed with ${res.status}`;
+		const err = Object.assign(new Error(msg), { status: res.status, body });
+		throw err;
 	}
 	const body = (await res.json()) as Record<string, unknown> | null;
 	if (
@@ -193,6 +203,7 @@ export function Card({ title, children, style }: CardProps) {
 				borderRadius: 8,
 				padding: "1rem 1.25rem",
 				background: "var(--dc-card-bg, #fff)",
+				color: "#0f172a",
 				boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
 				...style,
 			}}
@@ -203,6 +214,7 @@ export function Card({ title, children, style }: CardProps) {
 						marginBottom: "0.75rem",
 						fontSize: "1rem",
 						fontWeight: 600,
+						color: "#0f172a",
 					}}
 				>
 					{title}
@@ -272,6 +284,9 @@ export function Input({ label, style, ...rest }: InputProps) {
 				fontSize: "0.95em",
 				width: "100%",
 				boxSizing: "border-box",
+				background: "#ffffff",
+				color: "#0f172a",
+				colorScheme: "light",
 				...style,
 			}}
 			{...rest}
@@ -314,13 +329,19 @@ export function Select({ label, options, style, children, ...rest }: SelectProps
 				padding: "6px 10px",
 				fontSize: "0.95em",
 				background: "#fff",
+				color: "#0f172a",
+				colorScheme: "light",
 				...style,
 			}}
 			{...rest}
 		>
 			{options
 				? options.map((o) => (
-						<option key={o.value} value={o.value}>
+						<option
+							key={o.value}
+							value={o.value}
+							style={{ color: "#0f172a", background: "#fff" }}
+						>
 							{o.label}
 						</option>
 					))
@@ -361,6 +382,7 @@ export function Toggle({ checked, onChange, label, disabled }: ToggleProps) {
 				gap: 8,
 				cursor: disabled ? "not-allowed" : "pointer",
 				opacity: disabled ? 0.5 : 1,
+				color: "#0f172a",
 			}}
 		>
 			<input
@@ -370,7 +392,7 @@ export function Toggle({ checked, onChange, label, disabled }: ToggleProps) {
 				onChange={(e) => onChange(e.currentTarget.checked)}
 				style={{ width: 18, height: 18 }}
 			/>
-			{label && <span>{label}</span>}
+			{label && <span style={{ color: "#0f172a" }}>{label}</span>}
 		</label>
 	);
 }
@@ -567,7 +589,7 @@ export function FormField({
 			{label && (
 				<label
 					htmlFor={fieldId}
-					style={{ fontSize: "0.85em", color: "#444", fontWeight: 500 }}
+					style={{ fontSize: "0.85em", color: "#334155", fontWeight: 500 }}
 				>
 					{label}
 					{required && <span style={{ color: "#b91c1c", marginLeft: 4 }}>*</span>}
@@ -577,7 +599,7 @@ export function FormField({
 			{description && !error && (
 				<p
 					id={descId}
-					style={{ fontSize: "0.78em", color: "#666", margin: "2px 0 0" }}
+					style={{ fontSize: "0.78em", color: "#64748b", margin: "2px 0 0" }}
 				>
 					{description}
 				</p>
@@ -717,6 +739,8 @@ export function NumberInput({
 					padding: "6px 10px",
 					fontSize: "0.95em",
 					background: "transparent",
+					color: "#0f172a",
+					colorScheme: "light",
 					width: "100%",
 					minWidth: 0,
 					...style,
@@ -892,6 +916,8 @@ export function Combobox({
 								padding: "4px 8px",
 								fontSize: "0.9em",
 								boxSizing: "border-box",
+								color: "#0f172a",
+								background: "#fff",
 							}}
 						/>
 					</div>
@@ -921,7 +947,7 @@ export function Combobox({
 										border: "none",
 										padding: "6px 10px",
 										fontSize: "0.9em",
-										color: "#888",
+										color: "#64748b",
 										fontStyle: "italic",
 										cursor: "pointer",
 									}}
@@ -934,7 +960,7 @@ export function Combobox({
 							<li
 								style={{
 									padding: "8px 10px",
-									color: "#888",
+									color: "#64748b",
 									fontSize: "0.9em",
 								}}
 							>
@@ -960,11 +986,12 @@ export function Combobox({
 											display: "flex",
 											justifyContent: "space-between",
 											gap: 8,
+											color: opt.value === value ? "#1e40af" : "#0f172a",
 										}}
 									>
-										<span>{opt.label}</span>
+										<span style={{ color: opt.value === value ? "#1e40af" : "#0f172a", fontWeight: opt.value === value ? 600 : 400 }}>{opt.label}</span>
 										{opt.hint && (
-											<span style={{ color: "#888", fontSize: "0.85em" }}>
+											<span style={{ color: "#64748b", fontSize: "0.85em" }}>
 												{opt.hint}
 											</span>
 										)}
@@ -1132,6 +1159,7 @@ export function MultiSelect({
 						fontSize: "0.9em",
 						flex: "1 1 80px",
 						minWidth: 80,
+						color: "#0f172a",
 					}}
 				/>
 			</div>
@@ -1156,7 +1184,7 @@ export function MultiSelect({
 							<li
 								style={{
 									padding: "8px 10px",
-									color: "#888",
+									color: "#64748b",
 									fontSize: "0.9em",
 								}}
 							>
@@ -1181,9 +1209,10 @@ export function MultiSelect({
 												display: "flex",
 												justifyContent: "space-between",
 												gap: 8,
+												color: active ? "#1e40af" : "#0f172a",
 											}}
 										>
-											<span>
+											<span style={{ color: active ? "#1e40af" : "#0f172a", fontWeight: active ? 600 : 400 }}>
 												<span
 													aria-hidden
 													style={{
@@ -1198,7 +1227,7 @@ export function MultiSelect({
 												{opt.label}
 											</span>
 											{opt.hint && (
-												<span style={{ color: "#888", fontSize: "0.85em" }}>
+												<span style={{ color: "#64748b", fontSize: "0.85em" }}>
 													{opt.hint}
 												</span>
 											)}

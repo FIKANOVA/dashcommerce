@@ -75,6 +75,7 @@ const GROUPS: GroupSpec[] = [
 ];
 
 interface SettingsShape {
+	paymentProvider: string | null;
 	defaultCurrency: string | null;
 	enabledCurrencies: string[] | null;
 	taxMode: TaxMode | null;
@@ -94,8 +95,11 @@ interface SettingsShape {
 	stripeSecretKey: string | null;
 	stripePublishableKey: string | null;
 	stripeWebhookSecret: string | null;
+	paymentProviderSecretKey: string | null;
+	paymentProviderWebhookSecret: string | null;
 	checkoutMode: CheckoutMode | null;
 	_secrets: Record<string, { isSet: boolean; hint: string | null }>;
+	_providers?: Array<{ id: string; label: string; supportedCurrencies: string[] }>;
 }
 
 type Draft = Partial<Omit<SettingsShape, "_secrets">>;
@@ -228,7 +232,8 @@ export function SettingsPage() {
 	const enabledCurrencies =
 		(effective("enabledCurrencies") as string[] | null | undefined) ?? [];
 
-	const needsStripeKey = !saved._secrets?.stripeSecretKey?.isSet;
+	const activeProvider = (effective("paymentProvider") as string | null) ?? "stripe";
+	const needsStripeKey = activeProvider === "stripe" && !saved._secrets?.stripeSecretKey?.isSet;
 
 	return (
 		<div
@@ -249,36 +254,66 @@ export function SettingsPage() {
 				</Alert>
 			)}
 
+			{activeProvider === "paystack" && (
+				<Alert type="info" title="Using Paystack">
+					Checkouts will be processed via Paystack (Cards &amp; M-Pesa). Sibling package <code>@dashcommerce/paystack</code> handles external hosted checkout.
+				</Alert>
+			)}
+
+			{activeProvider === "mock" && (
+				<Alert type="info" title="Using Mock Provider">
+					Checkouts simulate instant payment without real credentials. Ideal for local testing and CI.
+				</Alert>
+			)}
+
 			<Alert type="info" title="Tax settings live in Tax">
 				Tax mode and rates are configured on the dedicated Tax page to keep
 				flat-rate, table, and Stripe Tax controls in one place.
 			</Alert>
 
-			{GROUPS.map((group) => (
-				<Card key={group.id} title={group.title}>
-					{group.description && (
-						<p
-							style={{
-								color: "#666",
-								margin: "0 0 0.75rem",
-								fontSize: "0.9em",
-							}}
-						>
-							{group.description}
-						</p>
-					)}
-					<GroupBody
-						group={group.id}
-						saved={saved}
-						draft={draft}
-						errors={errors}
-						enabledCurrencies={enabledCurrencies}
-						connectEnabled={connectEnabled}
-						setField={setField}
-						disabled={saving}
-					/>
-				</Card>
-			))}
+			{GROUPS.map((group) => {
+				const isStripeGroup = group.id === "stripe";
+				const title = isStripeGroup
+					? activeProvider === "mock"
+						? "Mock Sandbox Provider"
+						: activeProvider === "stripe"
+							? "Stripe"
+							: `${activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} Gateway Configuration`
+					: group.title;
+				const desc = isStripeGroup
+					? activeProvider === "mock"
+						? "Credential-free local test simulation."
+						: activeProvider === "stripe"
+							? group.description
+							: `API credentials and webhook verification for ${activeProvider}.`
+					: group.description;
+
+				return (
+					<Card key={group.id} title={title}>
+						{desc && (
+							<p
+								style={{
+									color: "#475569",
+									margin: "0 0 0.75rem",
+									fontSize: "0.9em",
+								}}
+							>
+								{desc}
+							</p>
+						)}
+						<GroupBody
+							group={group.id}
+							saved={saved}
+							draft={draft}
+							errors={errors}
+							enabledCurrencies={enabledCurrencies}
+							connectEnabled={connectEnabled}
+							setField={setField}
+							disabled={saving}
+						/>
+					</Card>
+				);
+			})}
 
 			<StickyBar
 				isDirty={isDirty}
@@ -358,11 +393,76 @@ function GroupBody({
 						{...(errors.defaultCurrency ? { invalid: true } : {})}
 					/>
 				</FormField>
+				<FormField
+					label="Active payment provider"
+					description="Processor that handles storefront checkout sessions. Sibling packages (e.g. @dashcommerce/paystack) register via the payment provider interface."
+					error={errors.paymentProvider}
+				>
+					<Select
+						value={(eff("paymentProvider", saved, draft) as string | null) ?? "stripe"}
+						onChange={(e) =>
+							setField("paymentProvider", e.currentTarget.value || "stripe")
+						}
+						options={[
+							{ value: "stripe", label: "Stripe (International Cards, Apple Pay, Google Pay)" },
+							{ value: "paystack", label: "Paystack (African Cards, M-Pesa, Apple Pay)" },
+							{ value: "mock", label: "Mock Provider (Credential-free local test mode)" },
+						]}
+						disabled={disabled}
+					/>
+				</FormField>
 			</>
 		);
 	}
 
 	if (group === "stripe") {
+		const activeProvider = (eff("paymentProvider", saved, draft) as string | null) ?? "stripe";
+
+		if (activeProvider === "mock") {
+			return (
+				<div style={{ padding: "0.25rem 0" }}>
+					<Alert type="info" title="Offline Mock Sandbox Active">
+						Local mock provider is active. No external gateway API keys, publishable keys, or webhook secrets are required.
+					</Alert>
+					<p style={{ color: "#64748b", fontSize: "0.88em", marginTop: "0.5rem" }}>
+						Storefront checkouts will automatically simulate instant success and generate local test orders.
+					</p>
+				</div>
+			);
+		}
+
+		if (activeProvider !== "stripe") {
+			const providerLabel = activeProvider === "paystack" ? "Paystack" : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1);
+
+			return (
+				<>
+					<Alert type="info" title={`${providerLabel} Active`}>
+						Checkouts will be routed through <code>{activeProvider === "paystack" ? "@dashcommerce/paystack" : `@${activeProvider}`}</code>. Enter your API credentials below.
+					</Alert>
+					<SecretField
+						keyName="paymentProviderSecretKey"
+						label={`${providerLabel} secret key`}
+						description={`Private secret API key for ${providerLabel} (e.g. sk_test_...). Never shared with the browser.`}
+						saved={saved}
+						draft={draft}
+						errors={errors}
+						setField={setField}
+						disabled={disabled}
+					/>
+					<SecretField
+						keyName="paymentProviderWebhookSecret"
+						label={`${providerLabel} webhook secret`}
+						description={`Secret used to verify incoming webhook signatures. Webhook URL: /api/webhooks/${activeProvider}`}
+						saved={saved}
+						draft={draft}
+						errors={errors}
+						setField={setField}
+						disabled={disabled}
+					/>
+				</>
+			);
+		}
+
 		const pkValue = (eff("stripePublishableKey", saved, draft) as string | null) ?? "";
 		const checkoutModeValue =
 			(eff("checkoutMode", saved, draft) as CheckoutMode | null) ?? "hosted";
@@ -593,7 +693,7 @@ function SecretField({
 	setField,
 	disabled,
 }: {
-	keyName: "stripeSecretKey" | "stripeWebhookSecret";
+	keyName: string;
 	label: string;
 	description?: string;
 	saved: SettingsShape;
@@ -602,29 +702,59 @@ function SecretField({
 	setField: <K extends keyof Draft>(key: K, value: Draft[K]) => void;
 	disabled: boolean;
 }) {
+	const [visible, setVisible] = useState(false);
 	const meta = saved._secrets?.[keyName];
-	const value = (draft[keyName] as string | undefined) ?? "";
+	const value = (draft[keyName as keyof Draft] as string | undefined) ?? "";
+	const isWebhook = keyName.toLowerCase().includes("webhook");
+
 	return (
 		<FormField
 			label={label}
 			description={
 				meta?.isSet
-					? `Leave blank to keep current (${meta.hint ?? "set"}).`
+					? `Leave blank to keep current (${meta.hint ?? "configured"}).`
 					: description
 			}
 			error={errors[keyName]}
 		>
-			<Input
-				type="password"
-				value={value}
-				onChange={(e) => {
-					const raw = e.currentTarget.value;
-					setField(keyName, raw === "" ? undefined : raw);
-				}}
-				placeholder={meta?.isSet ? (meta.hint ?? "••••") : description}
-				autoComplete="new-password"
-				disabled={disabled}
-			/>
+			<div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+				<Input
+					type={isWebhook || visible ? "text" : "password"}
+					value={value}
+					onChange={(e) => {
+						const raw = e.currentTarget.value;
+						setField(keyName as any, raw === "" ? undefined : raw);
+					}}
+					placeholder={meta?.isSet ? (meta.hint ?? "••••") : (description ?? "")}
+					autoComplete="off"
+					disabled={disabled}
+					style={{
+						fontFamily: "ui-monospace, monospace",
+						fontSize: "0.9em",
+						color: "#0f172a",
+						background: "#ffffff",
+					}}
+				/>
+				{!isWebhook && (
+					<button
+						type="button"
+						onClick={() => setVisible(!visible)}
+						style={{
+							padding: "6px 10px",
+							fontSize: "0.82em",
+							background: "#f1f5f9",
+							border: "1px solid #cbd5e1",
+							borderRadius: 6,
+							cursor: "pointer",
+							color: "#334155",
+							whiteSpace: "nowrap",
+							userSelect: "none",
+						}}
+					>
+						{visible ? "Hide" : "Show"}
+					</button>
+				)}
+			</div>
 		</FormField>
 	);
 }

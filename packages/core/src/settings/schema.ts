@@ -62,6 +62,7 @@ function asStringWithPrefix(
 }
 
 export const SETTINGS_KEYS = [
+	"paymentProvider",
 	"defaultCurrency",
 	"enabledCurrencies",
 	"taxMode",
@@ -79,6 +80,8 @@ export const SETTINGS_KEYS = [
 	"stripeSecretKey",
 	"stripePublishableKey",
 	"stripeWebhookSecret",
+	"paymentProviderSecretKey",
+	"paymentProviderWebhookSecret",
 	"checkoutMode",
 ] as const;
 
@@ -87,6 +90,8 @@ export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 export const SECRET_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
 	"stripeSecretKey",
 	"stripeWebhookSecret",
+	"paymentProviderSecretKey",
+	"paymentProviderWebhookSecret",
 ]);
 
 /** Sentinel the admin form writes when a secret is left untouched. */
@@ -119,6 +124,12 @@ export function validateSettingsKey(
 	value: unknown,
 ): Result<unknown> {
 	switch (key as SettingsKey) {
+		case "paymentProvider": {
+			if (typeof value !== "string" || value.trim() === "") {
+				return bad("paymentProvider must be a non-empty string");
+			}
+			return ok(value.trim());
+		}
 		case "defaultCurrency": {
 			if (typeof value !== "string") return bad("defaultCurrency must be a string");
 			const code = value.toUpperCase();
@@ -168,6 +179,14 @@ export function validateSettingsKey(
 			return asStringWithPrefix(value, key, ["pk_test_", "pk_live_"]);
 		case "stripeWebhookSecret":
 			return asStringWithPrefix(value, key, ["whsec_"]);
+		case "paymentProviderSecretKey":
+		case "paymentProviderWebhookSecret": {
+			if (value === null || value === undefined || value === "") return ok(null);
+			if (typeof value !== "string" || value.trim() === "") {
+				return bad(`${key} must be a non-empty string`);
+			}
+			return ok(value.trim());
+		}
 		case "checkoutMode": {
 			if (typeof value !== "string" || !CHECKOUT_MODES.includes(value as CheckoutMode)) {
 				return bad(`checkoutMode must be one of: ${CHECKOUT_MODES.join(", ")}`);
