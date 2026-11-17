@@ -68,7 +68,7 @@ export function dashcommerce(options: DashCommerceOptions = {}): PluginDescripto
 			"network:request",
 			"email:send",
 		],
-		allowedHosts: ["api.stripe.com", "files.stripe.com"],
+		allowedHosts: ["api.stripe.com", "files.stripe.com", "api.paystack.co"],
 		storage: DASHCOMMERCE_STORAGE,
 		// Native React admin UI. Pages + widgets populated progressively in Phase 12.
 		adminEntry: "@dashcommerce/core/admin",
@@ -176,7 +176,7 @@ export function dashcommerce(options: DashCommerceOptions = {}): PluginDescripto
 				"network:request",
 				"email:send",
 			],
-			allowedHosts: ["api.stripe.com", "files.stripe.com"],
+			allowedHosts: ["api.stripe.com", "files.stripe.com", "api.paystack.co"],
 		},
 	} as PluginDescriptor;
 }

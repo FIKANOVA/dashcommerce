@@ -24,6 +24,7 @@ import { money, zero } from "../money";
 import {
 	DEFAULT_PAYMENT_PROVIDER_ID,
 	type InitCheckoutInput,
+	type InitCheckoutResult,
 	loadPaymentProviderCredentials,
 	resolveProvider,
 	unsupportedHostedCheckoutFeatures,
@@ -431,10 +432,21 @@ export const checkoutRoutes = {
 		public: true,
 		handler: async (routeCtx: RouteContext, _ctx?: PluginContext) => {
 			const ctx = (_ctx ?? (routeCtx as unknown as PluginContext)) as PluginContext;
-			const input = (routeCtx.input ?? {}) as {
+			let input = (routeCtx.input ?? {}) as {
 				notes?: string;
 				customerEmail?: string;
 			};
+			if (!input.customerEmail && routeCtx.request) {
+				try {
+					const cloned = routeCtx.request.clone();
+					const parsed = (await cloned.json()) as Record<string, unknown>;
+					if (parsed && typeof parsed === "object") {
+						input = { ...input, ...parsed };
+					}
+				} catch {
+					// Body might be non-JSON or already consumed
+				}
+			}
 
 			const { sessionId } = resolveSessionId(routeCtx.request);
 			const cart = await getCart(ctx, sessionId);
@@ -495,7 +507,9 @@ export const checkoutRoutes = {
 
 			const withContact: CartState = {
 				...cart,
-				...(input.customerEmail ? { customerEmail: input.customerEmail } : {}),
+				...(typeof input.customerEmail === "string"
+					? { customerEmail: input.customerEmail.trim() }
+					: {}),
 				...(input.notes ? { notes: input.notes } : {}),
 			};
 
@@ -533,6 +547,21 @@ export const checkoutRoutes = {
 					}),
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
+			}
+			if (provider.id === "paystack") {
+				const email = recalculated.customerEmail?.trim();
+				if (!email) {
+					return new Response(
+						JSON.stringify({ error: "Customer email is required for Paystack checkout." }),
+						{ status: 400, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+					return new Response(
+						JSON.stringify({ error: "A valid customer email is required for Paystack checkout." }),
+						{ status: 400, headers: { "Content-Type": "application/json" } },
+					);
+				}
 			}
 			await save(ctx, recalculated);
 
@@ -667,8 +696,11 @@ export const checkoutRoutes = {
 			const siteUrl = getPublicSiteUrl(ctx);
 
 			// Pass `{CHECKOUT_SESSION_ID}` literally — Stripe substitutes
-			// it server-side on redirect.
-			const successUrl = `${siteUrl}/thank-you/${encodeURIComponent(orderDraftId)}?session_id={CHECKOUT_SESSION_ID}`;
+			// it server-side on redirect. Non-Stripe providers use the clean draft path.
+			const successUrl =
+				provider.id === "stripe"
+					? `${siteUrl}/thank-you/${encodeURIComponent(orderDraftId)}?session_id={CHECKOUT_SESSION_ID}`
+					: `${siteUrl}/thank-you/${encodeURIComponent(orderDraftId)}`;
 			const cancelUrl = `${siteUrl}/checkout?canceled=1`;
 
 			// Vendor split (Connect). Reuses the single-vendor path from
@@ -823,7 +855,22 @@ export const checkoutRoutes = {
 					: {}),
 			};
 
-			const checkoutResult = await provider.initCheckout(ctx, initCheckout, creds);
+			let checkoutResult: InitCheckoutResult;
+			try {
+				checkoutResult = await provider.initCheckout(ctx, initCheckout, creds);
+			} catch (err: unknown) {
+				const rawMessage = err instanceof Error ? err.message : String(err);
+				const sanitizedMessage = sanitizeProviderErrorMessage(rawMessage);
+				const status = extractProviderErrorStatus(err);
+				return new Response(
+					JSON.stringify({
+						error: sanitizedMessage || `Payment provider "${provider.id}" checkout initialization failed`,
+						code: "provider_error",
+					}),
+					{ status, headers: { "Content-Type": "application/json" } },
+				);
+			}
+
 			if (checkoutResult.kind !== "redirect" || !checkoutResult.redirectUrl) {
 				return new Response(
 					JSON.stringify({
@@ -891,3 +938,23 @@ export function draftKey(orderDraftId: string): string {
 
 // re-exports so webhook route can reuse the helpers without reaching in
 export { zero };
+
+function sanitizeProviderErrorMessage(msg: string): string {
+	return msg
+		.replace(/sk_(?:test|live)_[a-zA-Z0-9]+/g, "[REDACTED]")
+		.replace(/whsec_[a-zA-Z0-9]+/g, "[REDACTED]")
+		.replace(/Bearer\s+[a-zA-Z0-9_\-\.]+/gi, "Bearer [REDACTED]");
+}
+
+function extractProviderErrorStatus(err: unknown): number {
+	if (
+		err &&
+		typeof err === "object" &&
+		"status" in err &&
+		typeof (err as { status: unknown }).status === "number"
+	) {
+		const s = (err as { status: number }).status;
+		if (s >= 400 && s < 500) return s;
+	}
+	return 502;
+}

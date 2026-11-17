@@ -17,65 +17,80 @@
  * Digital-only carts skip the shipping step and go straight to the
  * Pay button.
  */
+import { getHostedCheckoutCopy } from "../hosted-checkout";
+
 export interface Props {
   /** When true, the customer's cart is all digital — skip the ship-to step. */
   digitalOnly?: boolean;
+  /** Active payment provider ID (e.g. "stripe" | "paystack"). */
+  provider?: string;
+  /** Human-readable display label for the payment provider (e.g. "Stripe", "Paystack"). */
+  providerLabel?: string;
 }
-const { digitalOnly = false } = Astro.props;
+const {
+  digitalOnly = false,
+  provider = "stripe",
+  providerLabel,
+} = Astro.props;
+
+const copy = getHostedCheckoutCopy(provider, digitalOnly, providerLabel);
+const normalizedProvider = (provider ?? "stripe").toLowerCase();
+const label = copy.label;
+const detailsHint = copy.detailsHint;
+const payHint = copy.payHint;
 ---
 
-<section class="hc" data-digital-only={digitalOnly ? "1" : "0"}>
-  {!digitalOnly && (
-    <div class="hc-step" id="hc-step-location">
-      <div class="hc-step-header">
-        <span class="hc-step-num">1</span>
-        <h2 class="hc-step-title">Where does this ship to?</h2>
-      </div>
-      <p class="hc-step-hint">Enter your country and postal code — we'll show available shipping options. Stripe collects your full address on the next page.</p>
-
-      <form id="hc-location-form" class="hc-form">
-        <div class="hc-row-2">
-          <label class="hc-label">
-            <span>Country <small>(ISO-2)</small></span>
-            <input required id="hc-country" value="US" maxlength="2" autocomplete="shipping country" />
-          </label>
-          <label class="hc-label">
-            <span>Postal code</span>
-            <input required id="hc-postal" autocomplete="shipping postal-code" />
-          </label>
-        </div>
-        <p id="hc-location-error" class="hc-error" role="alert"></p>
-        <button id="hc-location-submit" type="submit" class="btn-secondary hc-submit">
-          Get shipping options →
-        </button>
-      </form>
+<section class="hc" data-digital-only={digitalOnly ? "1" : "0"} data-provider={normalizedProvider} data-provider-label={label}>
+  <div class="hc-step" id="hc-step-location">
+    <div class="hc-step-header">
+      <span class="hc-step-num">1</span>
+      <h2 class="hc-step-title">{digitalOnly ? "Your details" : "Contact & shipping"}</h2>
     </div>
-  )}
+    <p class="hc-step-hint" id="hc-location-hint">{detailsHint}</p>
 
-  {!digitalOnly && (
-    <div class="hc-step" id="hc-step-method" hidden>
-      <div class="hc-step-header">
-        <span class="hc-step-num">2</span>
-        <h2 class="hc-step-title">Choose shipping</h2>
+    <form id="hc-location-form" class="hc-form">
+      <label class="hc-label">
+        <span>Email</span>
+        <input required type="email" id="hc-email" autocomplete="email" placeholder="you@example.com" />
+      </label>
+
+      <div class="hc-row-2" id="hc-shipping-fields" hidden={digitalOnly}>
+        <label class="hc-label">
+          <span>Country <small>(ISO-2)</small></span>
+          <input required id="hc-country" value="US" maxlength="2" autocomplete="shipping country" />
+        </label>
+        <label class="hc-label">
+          <span>Postal code</span>
+          <input required id="hc-postal" autocomplete="shipping postal-code" />
+        </label>
       </div>
-      <div id="hc-method-options" class="hc-method-list"></div>
-      <p id="hc-method-error" class="hc-error" role="alert"></p>
+
+      <p id="hc-location-error" class="hc-error" role="alert"></p>
+      <button id="hc-location-submit" type="submit" class="btn-secondary hc-submit" hidden={digitalOnly}>
+        Get shipping options →
+      </button>
+    </form>
+  </div>
+
+  <div class="hc-step" id="hc-step-method" hidden>
+    <div class="hc-step-header">
+      <span class="hc-step-num">2</span>
+      <h2 class="hc-step-title">Choose shipping</h2>
     </div>
-  )}
+    <div id="hc-method-options" class="hc-method-list"></div>
+    <p id="hc-method-error" class="hc-error" role="alert"></p>
+  </div>
 
   <div class="hc-step" id="hc-step-pay" data-ready={digitalOnly ? "1" : "0"}>
     <div class="hc-step-header">
-      <span class="hc-step-num">{digitalOnly ? 1 : 3}</span>
+      <span class="hc-step-num">{digitalOnly ? 2 : 3}</span>
       <h2 class="hc-step-title">Pay securely</h2>
     </div>
-    <p class="hc-step-hint">
-      You'll be redirected to Stripe to enter your email, {digitalOnly ? "billing address, " : "full address, "}
-      and card details. We never see your card.
-    </p>
+    <p class="hc-step-hint" id="hc-pay-hint">{payHint}</p>
     <p id="hc-pay-error" class="hc-error" role="alert"></p>
     <button id="hc-pay-btn" type="button" class="btn-primary hc-submit" disabled={!digitalOnly}>
       <span class="hc-lock" aria-hidden="true">🔒</span>
-      Pay with Stripe →
+      Pay with {label} →
     </button>
   </div>
 </section>
@@ -168,6 +183,8 @@ const { digitalOnly = false } = Astro.props;
 </style>
 
 <script>
+  import { extractErrorMessage, getHostedCheckoutCopy } from "../hosted-checkout";
+
   type Money = { amount: number; currency: string };
   type CartState = {
     sessionId: string;
@@ -191,6 +208,11 @@ const { digitalOnly = false } = Astro.props;
   const locForm  = document.getElementById("hc-location-form") as HTMLFormElement | null;
   const locBtn   = document.getElementById("hc-location-submit") as HTMLButtonElement | null;
   const locErr   = document.getElementById("hc-location-error");
+  const locHint  = document.getElementById("hc-location-hint");
+  const emailInput = document.getElementById("hc-email") as HTMLInputElement | null;
+  const countryInput = document.getElementById("hc-country") as HTMLInputElement | null;
+  const postalInput = document.getElementById("hc-postal") as HTMLInputElement | null;
+  const shippingFields = document.getElementById("hc-shipping-fields");
   const methStep = document.getElementById("hc-step-method");
   const methList = document.getElementById("hc-method-options");
   const methErr  = document.getElementById("hc-method-error");
@@ -198,7 +220,10 @@ const { digitalOnly = false } = Astro.props;
   const payBtn   = document.getElementById("hc-pay-btn") as HTMLButtonElement | null;
   const payErr   = document.getElementById("hc-pay-error");
   const payStepNum = payStep?.querySelector<HTMLElement>(".hc-step-num");
-  const payStepHint = payStep?.querySelector<HTMLElement>(".hc-step-hint");
+  const payStepHint = document.getElementById("hc-pay-hint");
+
+  const provider = hcRoot?.dataset.provider || "stripe";
+  const providerLabel = hcRoot?.dataset.providerLabel || "Stripe";
 
   let digitalOnly = hcRoot?.dataset.digitalOnly === "1";
 
@@ -206,22 +231,30 @@ const { digitalOnly = false } = Astro.props;
     if (el) el.textContent = msg ?? "";
   }
 
+  function isValidEmail(val: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
+  }
+
   /**
-   * Render the "digital-only" variant: hide the shipping-location +
-   * shipping-method steps, renumber the Pay step as "1", update its
-   * hint to drop the shipping-address mention, and enable the Pay
-   * button immediately.
+   * Render the "digital-only" variant: hide shipping fields and method steps,
+   * renumber the Pay step as "2", update hints, and enable the Pay button.
    */
   function applyDigitalOnlyLayout() {
     digitalOnly = true;
     hcRoot?.setAttribute("data-digital-only", "1");
-    if (locStep) locStep.hidden = true;
+    if (shippingFields) shippingFields.hidden = true;
+    if (locBtn) locBtn.hidden = true;
     if (methStep) methStep.hidden = true;
     if (payStep) payStep.dataset.ready = "1";
-    if (payStepNum) payStepNum.textContent = "1";
+    if (payStepNum) payStepNum.textContent = "2";
+    const locTitle = locStep?.querySelector<HTMLElement>(".hc-step-title");
+    if (locTitle) locTitle.textContent = "Your details";
+    const updatedCopy = getHostedCheckoutCopy(provider, true, providerLabel);
+    if (locHint) {
+      locHint.textContent = updatedCopy.detailsHint;
+    }
     if (payStepHint) {
-      payStepHint.textContent =
-        "You'll be redirected to Stripe to enter your email, billing address, and card details. We never see your card.";
+      payStepHint.textContent = updatedCopy.payHint;
     }
     if (payBtn) payBtn.disabled = false;
   }
@@ -232,53 +265,72 @@ const { digitalOnly = false } = Astro.props;
   // outstanding `digitalOnly` hint to skip the roundtrip when the
   // Astro prop already set things up correctly.
   (async () => {
-    if (digitalOnly) return;
     try {
       const res = await fetch(`${API}/cart`, { credentials: "include" });
       if (!res.ok) return;
       const body = (await res.json()) as {
-        cart?: { items?: Array<{ isDigital?: boolean }> };
+        cart?: { customerEmail?: string; items?: Array<{ isDigital?: boolean }> };
       };
-      const items = body.cart?.items ?? [];
-      if (items.length > 0 && items.every((l) => l.isDigital === true)) {
-        applyDigitalOnlyLayout();
+      if (emailInput && !emailInput.value && body.cart?.customerEmail) {
+        emailInput.value = body.cart.customerEmail;
+      }
+      if (!digitalOnly) {
+        const items = body.cart?.items ?? [];
+        if (items.length > 0 && items.every((l) => l.isDigital === true)) {
+          applyDigitalOnlyLayout();
+        }
       }
     } catch {
       /* network error → leave default layout; nothing is broken */
     }
   })();
 
-  // --- 1. Ship-to location form -------------------------------------------
-  //
-  // Sends a minimal `{country, postalCode}` to `cart/shipping-location`.
-  // That writes a placeholder shipping address on the server cart so
-  // that `cart/shipping-methods` can compute rates. Stripe will collect
-  // the full address (line1, city, region) after we redirect.
-  if (!digitalOnly && locForm) {
+  // --- 1. Customer details & ship-to location form ------------------------
+  if (locForm) {
     locForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       setError(locErr, null);
-      if (locBtn) { locBtn.disabled = true; locBtn.textContent = "Looking up rates…"; }
 
-      const country = (document.getElementById("hc-country") as HTMLInputElement).value.trim().toUpperCase();
-      const postalCode = (document.getElementById("hc-postal") as HTMLInputElement).value.trim();
+      const email = emailInput?.value.trim() ?? "";
+      if (!email || !isValidEmail(email)) {
+        setError(locErr, "A valid email address is required.");
+        emailInput?.focus();
+        return;
+      }
+
+      if (digitalOnly) {
+        if (payStep) payStep.dataset.ready = "1";
+        if (payBtn) payBtn.disabled = false;
+        payStep?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+
+      if (!countryInput || !postalInput) return;
+      const country = countryInput.value.trim().toUpperCase();
+      const postalCode = postalInput.value.trim();
+      if (!country || !postalCode) {
+        setError(locErr, "Country and postal code are required.");
+        return;
+      }
+
+      if (locBtn) { locBtn.disabled = true; locBtn.textContent = "Looking up rates…"; }
 
       try {
         const locRes = await fetch(`${API}/cart/shipping-location`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ country, postalCode }),
+          body: JSON.stringify({ country, postalCode, email }),
         });
         if (!locRes.ok) {
           const b = await locRes.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error ?? `Save failed (${locRes.status})`);
+          throw new Error(extractErrorMessage(b, locRes.status));
         }
 
         const optsRes = await fetch(`${API}/cart/shipping-methods`, { credentials: "include" });
         if (!optsRes.ok) {
           const b = await optsRes.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error ?? `Couldn't load shipping options (${optsRes.status})`);
+          throw new Error(extractErrorMessage(b, optsRes.status));
         }
         const { options } = (await optsRes.json()) as { options: ShippingOption[] };
         if (!options || options.length === 0) {
@@ -335,7 +387,7 @@ const { digitalOnly = false } = Astro.props;
           });
           if (!res.ok) {
             const b = await res.json().catch(() => ({}));
-            throw new Error((b as { error?: string }).error ?? `Save failed (${res.status})`);
+            throw new Error(extractErrorMessage(b, res.status));
           }
           window.dispatchEvent(new CustomEvent("dashcommerce:cart-updated"));
           if (payBtn) payBtn.disabled = false;
@@ -355,29 +407,37 @@ const { digitalOnly = false } = Astro.props;
     return "";
   }
 
-  // --- 3. Pay with Stripe ----------------------------------------------------
+  // --- 3. Pay with configured provider ------------------------------------
   payBtn?.addEventListener("click", async () => {
     setError(payErr, null);
+
+    const email = emailInput?.value.trim() ?? "";
+    if (!email || !isValidEmail(email)) {
+      setError(payErr, "A valid email address is required to checkout.");
+      emailInput?.focus();
+      return;
+    }
+
     payBtn.disabled = true;
-    payBtn.textContent = "Redirecting to Stripe…";
+    payBtn.textContent = `Redirecting to ${providerLabel}…`;
     try {
       const res = await fetch(`${API}/checkout/create-session`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ customerEmail: email }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        throw new Error((b as { error?: string }).error ?? `Payment setup failed (${res.status})`);
+        throw new Error(extractErrorMessage(b, res.status));
       }
       const body = (await res.json()) as { url?: string; orderDraftId?: string };
-      if (!body.url) throw new Error("Stripe did not return a checkout URL");
+      if (!body.url) throw new Error(`${providerLabel} did not return a checkout URL`);
       window.location.href = body.url;
     } catch (err) {
       setError(payErr, err instanceof Error ? err.message : "Could not start checkout.");
       payBtn.disabled = false;
-      payBtn.innerHTML = '<span class="hc-lock" aria-hidden="true">🔒</span>Pay with Stripe →';
+      payBtn.innerHTML = `<span class="hc-lock" aria-hidden="true">🔒</span>Pay with ${providerLabel} →`;
     }
   });
 </script>

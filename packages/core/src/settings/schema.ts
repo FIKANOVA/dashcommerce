@@ -77,6 +77,7 @@ export const SETTINGS_KEYS = [
 	"stripeWebhookSecret",
 	"checkoutMode",
 	"paymentProvider",
+	"paystackSecretKey",
 ] as const;
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
@@ -84,6 +85,7 @@ export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 export const SECRET_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
 	"stripeSecretKey",
 	"stripeWebhookSecret",
+	"paystackSecretKey",
 ]);
 
 /** Sentinel the admin form writes when a secret is left untouched. */
@@ -172,6 +174,8 @@ export function validateSettingsKey(key: string, value: unknown): Result<unknown
 			}
 			return ok(value);
 		}
+		case "paystackSecretKey":
+			return asStringWithPrefix(value, key, ["sk_test_", "sk_live_"]);
 		default:
 			return bad(`Unknown settings key: ${key}`);
 	}

@@ -62,7 +62,7 @@ const DEFAULT_CAPABILITIES: PluginCapability[] = [
 	"network:request",
 	"email:send",
 ];
-const DEFAULT_ALLOWED_HOSTS = ["api.stripe.com", "files.stripe.com"];
+const DEFAULT_ALLOWED_HOSTS = ["api.stripe.com", "files.stripe.com", "api.paystack.co"];
 
 /**
  * DashCommerce's route handlers are authored in the two-arg convention

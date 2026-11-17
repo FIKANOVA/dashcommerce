@@ -769,7 +769,7 @@ export const webhookRoutes = {
 			}
 
 			const creds = await loadPaymentProviderCredentials(ctx.kv, provider.id);
-			const secret = creds?.webhookSecret;
+			const secret = creds?.webhookSecret ?? creds?.secretKey;
 			if (!secret) {
 				return new Response(JSON.stringify({ error: "Webhook secret not configured" }), {
 					status: 500,

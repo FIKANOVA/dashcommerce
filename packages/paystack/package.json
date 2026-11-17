@@ -1,0 +1,47 @@
+{
+  "name": "@dashcommerce/paystack",
+  "version": "0.1.0",
+  "description": "Paystack PaymentProvider for @dashcommerce/core — card + M-Pesa STK hosted checkout, HMAC-SHA512 webhook verification, status reconciliation, refunds, and Kenyan county shipping-zone presets.",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "dashcommerce",
+    "paystack",
+    "payments",
+    "mpesa",
+    "kenya",
+    "africa"
+  ],
+  "author": "Fikanova Limited",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@dashcommerce/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@dashcommerce/core": "workspace:*",
+    "tsdown": "^0.20.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -47,8 +47,9 @@ const GROUPS: GroupSpec[] = [
 	},
 	{
 		id: "stripe",
-		title: "Stripe",
-		description: "API keys used for charges, refunds, and webhook verification.",
+		title: "Payment provider",
+		description:
+			"Payment processor selection and API keys used for charges, refunds, and webhook verification.",
 	},
 	{
 		id: "reviews",
@@ -89,11 +90,13 @@ interface SettingsShape {
 	abandonedCartTokenTtlDays: number | null;
 	connectEnabled: boolean | null;
 	connectPlatformFeePercent: number | null;
+	paymentProvider: string | null;
 	// Secrets are never sent down (server omits them), but the draft
 	// accepts strings when the operator types a new value to commit.
 	stripeSecretKey: string | null;
 	stripePublishableKey: string | null;
 	stripeWebhookSecret: string | null;
+	paystackSecretKey: string | null;
 	checkoutMode: CheckoutMode | null;
 	_secrets: Record<string, { isSet: boolean; hint: string | null }>;
 }
@@ -228,7 +231,9 @@ export function SettingsPage() {
 	const enabledCurrencies =
 		(effective("enabledCurrencies") as string[] | null | undefined) ?? [];
 
-	const needsStripeKey = !saved._secrets?.stripeSecretKey?.isSet;
+	const activeProvider = (effective("paymentProvider") as string | null | undefined) ?? "stripe";
+	const needsStripeKey = activeProvider === "stripe" && !saved._secrets?.stripeSecretKey?.isSet;
+	const needsPaystackKey = activeProvider === "paystack" && !saved._secrets?.paystackSecretKey?.isSet;
 
 	return (
 		<div
@@ -244,6 +249,20 @@ export function SettingsPage() {
 						rel="noreferrer"
 					>
 						dashboard.stripe.com/test/apikeys
+					</a>
+					.
+				</Alert>
+			)}
+			{needsPaystackKey && (
+				<Alert type="warning" title="Finish setup">
+					Add a Paystack secret key below to start accepting payments. Test keys
+					start with <code>sk_test_</code>. Grab them at{" "}
+					<a
+						href="https://dashboard.paystack.com/#/settings/developer"
+						target="_blank"
+						rel="noreferrer"
+					>
+						dashboard.paystack.com/#/settings/developer
 					</a>
 					.
 				</Alert>
@@ -363,62 +382,123 @@ function GroupBody({
 	}
 
 	if (group === "stripe") {
+		const currentProvider =
+			(eff("paymentProvider", saved, draft) as string | null) ?? "stripe";
 		const pkValue = (eff("stripePublishableKey", saved, draft) as string | null) ?? "";
 		const checkoutModeValue =
 			(eff("checkoutMode", saved, draft) as CheckoutMode | null) ?? "hosted";
 		return (
 			<>
 				<FormField
-					label="Checkout flow"
-					description="Hosted redirects the customer to a Stripe-hosted page (less PCI scope, mobile-friendly, minimal UI to maintain). Embedded keeps the payment form on your storefront using Stripe Elements."
-					error={errors.checkoutMode}
+					label="Payment provider"
+					description="Choose which payment processor customer checkouts run through."
+					error={errors.paymentProvider}
 				>
 					<Select
-						value={checkoutModeValue}
+						value={currentProvider}
 						options={[
-							{ value: "hosted", label: "Hosted by Stripe (recommended)" },
-							{ value: "embedded", label: "Embedded (Stripe Elements on-site)" },
+							{ value: "stripe", label: "Stripe" },
+							{ value: "paystack", label: "Paystack" },
 						]}
-						onChange={(e) =>
-							setField("checkoutMode", e.currentTarget.value as CheckoutMode)
-						}
+						onChange={(e) => setField("paymentProvider", e.currentTarget.value)}
 						disabled={disabled}
 					/>
 				</FormField>
-				<SecretField
-					keyName="stripeSecretKey"
-					label="Stripe secret key"
-					description="Test keys start with sk_test_, live keys with sk_live_. Never shared with the browser."
-					saved={saved}
-					draft={draft}
-					errors={errors}
-					setField={setField}
-					disabled={disabled}
-				/>
-				<FormField
-					label="Stripe publishable key"
-					description="pk_test_ or pk_live_. Safe to expose in the storefront bundle."
-					error={errors.stripePublishableKey}
-				>
-					<Input
-						value={pkValue}
-						onChange={(e) => setField("stripePublishableKey", e.currentTarget.value)}
-						placeholder="pk_test_…"
-						disabled={disabled}
-						autoComplete="off"
-					/>
-				</FormField>
-				<SecretField
-					keyName="stripeWebhookSecret"
-					label="Stripe webhook secret"
-					description="whsec_… from `stripe listen` or the webhooks page."
-					saved={saved}
-					draft={draft}
-					errors={errors}
-					setField={setField}
-					disabled={disabled}
-				/>
-				<StripePing />
+
+				{currentProvider === "stripe" && (
+					<>
+						<div
+							style={{
+								margin: "1.25rem 0 0.75rem",
+								paddingTop: "1rem",
+								borderTop: "1px solid var(--dc-border, #e4e4e7)",
+								fontWeight: 600,
+								fontSize: "0.95rem",
+								color: "var(--dc-card-fg, #18181b)",
+							}}
+						>
+							Stripe configuration
+						</div>
+						<FormField
+							label="Checkout flow"
+							description="Hosted redirects the customer to a Stripe-hosted page (less PCI scope, mobile-friendly, minimal UI to maintain). Embedded keeps the payment form on your storefront using Stripe Elements."
+							error={errors.checkoutMode}
+						>
+							<Select
+								value={checkoutModeValue}
+								options={[
+									{ value: "hosted", label: "Hosted by Stripe (recommended)" },
+									{ value: "embedded", label: "Embedded (Stripe Elements on-site)" },
+								]}
+								onChange={(e) =>
+									setField("checkoutMode", e.currentTarget.value as CheckoutMode)
+								}
+								disabled={disabled}
+							/>
+						</FormField>
+						<SecretField
+							keyName="stripeSecretKey"
+							label="Stripe secret key"
+							description="Test keys start with sk_test_, live keys with sk_live_. Never shared with the browser."
+							saved={saved}
+							draft={draft}
+							errors={errors}
+							setField={setField}
+							disabled={disabled}
+						/>
+						<FormField
+							label="Stripe publishable key"
+							description="pk_test_ or pk_live_. Safe to expose in the storefront bundle."
+							error={errors.stripePublishableKey}
+						>
+							<Input
+								value={pkValue}
+								onChange={(e) => setField("stripePublishableKey", e.currentTarget.value)}
+								placeholder="pk_test_…"
+								disabled={disabled}
+								autoComplete="off"
+							/>
+						</FormField>
+						<SecretField
+							keyName="stripeWebhookSecret"
+							label="Stripe webhook secret"
+							description="whsec_… from `stripe listen` or the webhooks page."
+							saved={saved}
+							draft={draft}
+							errors={errors}
+							setField={setField}
+							disabled={disabled}
+						/>
+						<StripePing />
+					</>
+				)}
+
+				{currentProvider === "paystack" && (
+					<>
+						<div
+							style={{
+								margin: "1.25rem 0 0.75rem",
+								paddingTop: "1rem",
+								borderTop: "1px solid var(--dc-border, #e4e4e7)",
+								fontWeight: 600,
+								fontSize: "0.95rem",
+								color: "var(--dc-card-fg, #18181b)",
+							}}
+						>
+							Paystack configuration
+						</div>
+						<SecretField
+							keyName="paystackSecretKey"
+							label="Paystack secret key"
+							description="Test keys start with sk_test_, live keys with sk_live_. Never shared with the browser."
+							saved={saved}
+							draft={draft}
+							errors={errors}
+							setField={setField}
+							disabled={disabled}
+						/>
+					</>
+				)}
 			</>
 		);
 	}
@@ -593,7 +673,7 @@ function SecretField({
 	setField,
 	disabled,
 }: {
-	keyName: "stripeSecretKey" | "stripeWebhookSecret";
+	keyName: "stripeSecretKey" | "stripeWebhookSecret" | "paystackSecretKey";
 	label: string;
 	description?: string;
 	saved: SettingsShape;
@@ -699,8 +779,8 @@ function StickyBar({
 				bottom: 0,
 				left: 0,
 				right: 0,
-				background: "#fff",
-				borderTop: "1px solid #e4e4e7",
+				background: "var(--dc-card-bg, #fff)",
+				borderTop: "1px solid var(--dc-border, #e4e4e7)",
 				padding: "0.75rem 1rem",
 				display: "flex",
 				alignItems: "center",
@@ -711,7 +791,7 @@ function StickyBar({
 				marginTop: "auto",
 			}}
 		>
-			<span style={{ color: isDirty ? "#c08a00" : "#888", fontSize: "0.9em" }}>
+			<span style={{ color: isDirty ? "#854d0e" : "var(--dc-text-subtle, #52525b)", fontSize: "0.9em" }}>
 				{saving
 					? "Saving…"
 					: isDirty

@@ -582,6 +582,7 @@ export const cartRoutes = {
 			const body = (routeCtx.input ?? {}) as {
 				country?: string;
 				postalCode?: string;
+				email?: string;
 			};
 			const country = body.country?.trim().toUpperCase();
 			const postalCode = body.postalCode?.trim();
@@ -596,6 +597,7 @@ export const cartRoutes = {
 			const prior = cart.shippingAddress;
 			const nextCart: CartState = {
 				...cart,
+				...(body.email?.trim() ? { customerEmail: body.email.trim() } : {}),
 				shippingAddress: {
 					firstName: prior?.firstName ?? "",
 					lastName: prior?.lastName ?? "",

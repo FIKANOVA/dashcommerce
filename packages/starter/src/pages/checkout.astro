@@ -1,15 +1,23 @@
 ---
 import { getPluginSetting } from "emdash";
 import Shop from "../layouts/Shop.astro";
+import { registerPaystackProvider } from "@dashcommerce/paystack";
 import CheckoutForm from "@dashcommerce/core/astro/components/CheckoutForm.astro";
 import CheckoutSidebar from "@dashcommerce/core/astro/components/CheckoutSidebar.astro";
 import HostedCheckoutForm from "@dashcommerce/core/astro/components/HostedCheckoutForm.astro";
 
+registerPaystackProvider();
+
 export const prerender = false;
+
+const paymentProviderSetting = (await getPluginSetting("dashcommerce", "paymentProvider")) as string | null | undefined;
+const paymentProvider = paymentProviderSetting ?? "stripe";
+const providerLabel = paymentProvider === "paystack" ? "Paystack" : "Stripe";
 
 const publishableKey = (await getPluginSetting("dashcommerce", "stripePublishableKey")) as string | null | undefined;
 const secretKey      = (await getPluginSetting("dashcommerce", "stripeSecretKey"))      as string | null | undefined;
 const webhookSecret  = (await getPluginSetting("dashcommerce", "stripeWebhookSecret"))  as string | null | undefined;
+const paystackSecretKey = (await getPluginSetting("dashcommerce", "paystackSecretKey")) as string | null | undefined;
 // `checkoutMode` controls whether we redirect to Stripe's hosted page
 // (default — lower PCI scope, simpler UI) or render Stripe Elements
 // on-site. Publishable key is only required for the embedded flow.
@@ -21,9 +29,13 @@ const checkoutModeSetting = (await getPluginSetting("dashcommerce", "checkoutMod
 const checkoutMode: "hosted" | "embedded" = checkoutModeSetting ?? "hosted";
 
 const missingKeys: string[] = [];
-if (!secretKey)                                   missingKeys.push("stripeSecretKey");
-if (checkoutMode === "embedded" && !publishableKey) missingKeys.push("stripePublishableKey");
-if (!webhookSecret)                                missingKeys.push("stripeWebhookSecret");
+if (paymentProvider === "stripe") {
+  if (!secretKey)                                   missingKeys.push("stripeSecretKey");
+  if (checkoutMode === "embedded" && !publishableKey) missingKeys.push("stripePublishableKey");
+  if (!webhookSecret)                                missingKeys.push("stripeWebhookSecret");
+} else if (paymentProvider === "paystack") {
+  if (!paystackSecretKey)                           missingKeys.push("paystackSecretKey");
+}
 
 const canCheckout = missingKeys.length === 0;
 
@@ -48,7 +60,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
       <h1 class="co-title">Checkout</h1>
       <p class="co-subtitle">
         <span class="co-secure-icon" aria-hidden="true">🔒</span>
-        Secure · Encrypted · Stripe-powered
+        Secure · Encrypted · {providerLabel}-powered
       </p>
     </div>
   </div>
@@ -60,14 +72,16 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
 
       {!canCheckout && (
         <div class="co-misconfig" role="alert">
-          <strong>⚠ Stripe is not configured</strong>
+          <strong>⚠ {providerLabel} is not configured</strong>
           <p>
             The following settings are missing:
             <code>{missingKeys.join(", ")}</code>.
           </p>
           <p>
             Open <a href="/_emdash/admin/plugins/dashcommerce/settings">DashCommerce settings</a> to add them.
-            If using <code>stripe listen</code>, paste the <code>whsec_…</code> secret into <code>stripeWebhookSecret</code>.
+            {paymentProvider === "stripe" && (
+              <> If using <code>stripe listen</code>, paste the <code>whsec_…</code> secret into <code>stripeWebhookSecret</code>.</>
+            )}
           </p>
         </div>
       )}
@@ -80,7 +94,10 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
       )}
 
       {canCheckout && checkoutMode === "hosted" && (
-        <HostedCheckoutForm />
+        <HostedCheckoutForm
+          provider={paymentProvider}
+          providerLabel={providerLabel}
+        />
       )}
 
       {canCheckout && checkoutMode === "embedded" && (
@@ -186,7 +203,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
             class="btn-primary co-submit"
             disabled={!canCheckout}
           >
-            {canCheckout ? "Continue to payment →" : "Stripe not configured"}
+            {canCheckout ? "Continue to payment →" : `${providerLabel} not configured`}
           </button>
         </form>
       </section>

@@ -107,7 +107,8 @@ function ConfirmDialog() {
 			<div
 				onClick={(e) => e.stopPropagation()}
 				style={{
-					background: "#fff",
+					background: "var(--dc-card-bg, #fff)",
+					color: "var(--dc-card-fg, #18181b)",
 					borderRadius: 8,
 					maxWidth: 440,
 					width: "100%",
@@ -117,12 +118,17 @@ function ConfirmDialog() {
 			>
 				<h2
 					id={`dc-confirm-${state.id}-title`}
-					style={{ margin: "0 0 8px", fontSize: "1.05rem", fontWeight: 600 }}
+					style={{
+						margin: "0 0 8px",
+						fontSize: "1.05rem",
+						fontWeight: 600,
+						color: "var(--dc-card-fg, #18181b)",
+					}}
 				>
 					{state.title}
 				</h2>
 				{state.description && (
-					<div style={{ color: "#444", fontSize: "0.95em", lineHeight: 1.4 }}>
+					<div style={{ color: "var(--dc-text-muted, #3f3f46)", fontSize: "0.95em", lineHeight: 1.4 }}>
 						{state.description}
 					</div>
 				)}

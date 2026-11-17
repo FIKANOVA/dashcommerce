@@ -3,10 +3,13 @@ import node from "@astrojs/node";
 import react from "@astrojs/react";
 import sitemap from "@astrojs/sitemap";
 import { dashcommerce } from "@dashcommerce/core";
+import { registerPaystackProvider } from "@dashcommerce/paystack";
 import { d1, r2 } from "@emdash-cms/cloudflare";
 import { defineConfig, passthroughImageService } from "astro/config";
 import emdash, { local, s3 } from "emdash/astro";
 import { postgres, sqlite } from "emdash/db";
+
+registerPaystackProvider();
 
 // Three deploy targets share this config:
 //   - Local dev (default): SQLite file + local uploads

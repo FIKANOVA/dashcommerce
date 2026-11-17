@@ -179,6 +179,25 @@ export function usePluginAPI(): PluginAPI {
 // Primitives — minimal styled components that match the skill's contract
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * DashCommerce Admin Design Tokens
+ *
+ * Guarantees paired foreground and background colors so text is never
+ * unreadable when mounted inside host shells with different theme defaults
+ * (e.g. dark mode shells leaking light text onto light surfaces).
+ */
+export const DC_THEME = {
+	cardBg: "var(--dc-card-bg, #fff)",
+	cardFg: "var(--dc-card-fg, #18181b)",
+	cardBorder: "var(--dc-border, #e4e4e7)",
+	inputBg: "var(--dc-input-bg, #fff)",
+	inputFg: "var(--dc-input-fg, #18181b)",
+	label: "var(--dc-label, #3f3f46)",
+	textMuted: "var(--dc-text-muted, #3f3f46)",
+	textSubtle: "var(--dc-text-subtle, #52525b)",
+	border: "var(--dc-border, #d4d4d8)",
+} as const;
+
 export interface CardProps {
 	title?: ReactNode;
 	children?: ReactNode;
@@ -193,6 +212,7 @@ export function Card({ title, children, style }: CardProps) {
 				borderRadius: 8,
 				padding: "1rem 1.25rem",
 				background: "var(--dc-card-bg, #fff)",
+				color: "var(--dc-card-fg, #18181b)",
 				boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
 				...style,
 			}}
@@ -203,6 +223,7 @@ export function Card({ title, children, style }: CardProps) {
 						marginBottom: "0.75rem",
 						fontSize: "1rem",
 						fontWeight: 600,
+						color: "var(--dc-card-fg, #18181b)",
 					}}
 				>
 					{title}
@@ -272,6 +293,8 @@ export function Input({ label, style, ...rest }: InputProps) {
 				fontSize: "0.95em",
 				width: "100%",
 				boxSizing: "border-box",
+				background: "var(--dc-input-bg, #fff)",
+				color: "var(--dc-input-fg, #18181b)",
 				...style,
 			}}
 			{...rest}
@@ -286,7 +309,7 @@ export function Input({ label, style, ...rest }: InputProps) {
 				gap: 4,
 				margin: "0.5rem 0",
 				fontSize: "0.85em",
-				color: "#444",
+				color: "var(--dc-label, #3f3f46)",
 			}}
 		>
 			<span>{label}</span>
@@ -313,14 +336,15 @@ export function Select({ label, options, style, children, ...rest }: SelectProps
 				borderRadius: 6,
 				padding: "6px 10px",
 				fontSize: "0.95em",
-				background: "#fff",
+				background: "var(--dc-input-bg, #fff)",
+				color: "var(--dc-input-fg, #18181b)",
 				...style,
 			}}
 			{...rest}
 		>
 			{options
 				? options.map((o) => (
-						<option key={o.value} value={o.value}>
+						<option key={o.value} value={o.value} style={{ background: "#fff", color: "#18181b" }}>
 							{o.label}
 						</option>
 					))
@@ -336,7 +360,7 @@ export function Select({ label, options, style, children, ...rest }: SelectProps
 				gap: 4,
 				margin: "0.5rem 0",
 				fontSize: "0.85em",
-				color: "#444",
+				color: "var(--dc-label, #3f3f46)",
 			}}
 		>
 			<span>{label}</span>
@@ -399,7 +423,7 @@ export function Table<T>({
 }: TableProps<T>) {
 	if (data.length === 0) {
 		return (
-			<p style={{ color: "#888", fontStyle: "italic", margin: "1rem 0" }}>
+			<p style={{ color: "var(--dc-text-subtle, #52525b)", fontStyle: "italic", margin: "1rem 0" }}>
 				{emptyMessage}
 			</p>
 		);
@@ -411,6 +435,7 @@ export function Table<T>({
 					width: "100%",
 					borderCollapse: "collapse",
 					fontSize: "0.9em",
+					color: "var(--dc-card-fg, #18181b)",
 				}}
 			>
 				<thead>
@@ -422,7 +447,7 @@ export function Table<T>({
 									textAlign: "left",
 									padding: "8px 10px",
 									borderBottom: "2px solid #e4e4e7",
-									color: "#555",
+									color: "var(--dc-text-muted, #3f3f46)",
 									fontWeight: 600,
 									...(c.width ? { width: c.width } : {}),
 								}}
@@ -442,12 +467,13 @@ export function Table<T>({
 								style={{
 									cursor: onRowClick ? "pointer" : "default",
 									borderBottom: "1px solid #f4f4f5",
+									color: "var(--dc-card-fg, #18181b)",
 								}}
 							>
 								{columns.map((c) => (
 									<td
 										key={c.key}
-										style={{ padding: "8px 10px" }}
+										style={{ padding: "8px 10px", color: "var(--dc-card-fg, #18181b)" }}
 									>
 										{c.render
 											? c.render(row)
@@ -471,7 +497,7 @@ export function Loading({ label = "Loading…" }: { label?: string }) {
 				display: "flex",
 				alignItems: "center",
 				gap: 8,
-				color: "#888",
+				color: "var(--dc-text-subtle, #52525b)",
 				padding: "1rem 0",
 			}}
 		>
@@ -482,7 +508,7 @@ export function Loading({ label = "Loading…" }: { label?: string }) {
 					width: 14,
 					height: 14,
 					border: "2px solid #d4d4d8",
-					borderTopColor: "#888",
+					borderTopColor: "var(--dc-text-subtle, #52525b)",
 					borderRadius: "50%",
 					animation: "dc-spin 0.8s linear infinite",
 				}}
@@ -567,7 +593,7 @@ export function FormField({
 			{label && (
 				<label
 					htmlFor={fieldId}
-					style={{ fontSize: "0.85em", color: "#444", fontWeight: 500 }}
+					style={{ fontSize: "0.85em", color: "var(--dc-label, #3f3f46)", fontWeight: 500 }}
 				>
 					{label}
 					{required && <span style={{ color: "#b91c1c", marginLeft: 4 }}>*</span>}
@@ -577,7 +603,7 @@ export function FormField({
 			{description && !error && (
 				<p
 					id={descId}
-					style={{ fontSize: "0.78em", color: "#666", margin: "2px 0 0" }}
+					style={{ fontSize: "0.78em", color: "var(--dc-text-subtle, #52525b)", margin: "2px 0 0" }}
 				>
 					{description}
 				</p>
@@ -676,7 +702,8 @@ export function NumberInput({
 				alignItems: "stretch",
 				border: `1px solid ${border}`,
 				borderRadius: 6,
-				background: disabled ? "#f4f4f5" : "#fff",
+				background: disabled ? "#f4f4f5" : "var(--dc-input-bg, #fff)",
+				color: disabled ? "#71717a" : "var(--dc-input-fg, #18181b)",
 				opacity: disabled ? 0.6 : 1,
 				overflow: "hidden",
 				width: "100%",
@@ -688,7 +715,7 @@ export function NumberInput({
 					style={{
 						padding: "6px 8px",
 						background: "#f4f4f5",
-						color: "#555",
+						color: "var(--dc-text-muted, #3f3f46)",
 						fontSize: "0.85em",
 						display: "flex",
 						alignItems: "center",
@@ -717,6 +744,7 @@ export function NumberInput({
 					padding: "6px 10px",
 					fontSize: "0.95em",
 					background: "transparent",
+					color: "var(--dc-input-fg, #18181b)",
 					width: "100%",
 					minWidth: 0,
 					...style,
@@ -728,7 +756,7 @@ export function NumberInput({
 					style={{
 						padding: "6px 8px",
 						background: "#f4f4f5",
-						color: "#555",
+						color: "var(--dc-text-muted, #3f3f46)",
 						fontSize: "0.85em",
 						display: "flex",
 						alignItems: "center",
@@ -826,13 +854,13 @@ export function Combobox({
 					width: "100%",
 					textAlign: "left",
 					border: `1px solid ${border}`,
-					background: disabled ? "#f4f4f5" : "#fff",
+					background: disabled ? "#f4f4f5" : "var(--dc-input-bg, #fff)",
 					padding: "6px 30px 6px 10px",
 					borderRadius: 6,
 					fontSize: "0.95em",
 					cursor: disabled ? "not-allowed" : "pointer",
 					position: "relative",
-					color: selected ? "#111" : "#888",
+					color: selected ? "var(--dc-input-fg, #18181b)" : "var(--dc-text-subtle, #52525b)",
 				}}
 				aria-haspopup="listbox"
 				aria-expanded={open}
@@ -845,7 +873,7 @@ export function Combobox({
 						right: 10,
 						top: "50%",
 						transform: "translateY(-50%)",
-						color: "#888",
+						color: "var(--dc-text-subtle, #52525b)",
 					}}
 				>
 					▾
@@ -859,7 +887,8 @@ export function Combobox({
 						left: 0,
 						right: 0,
 						zIndex: 50,
-						background: "#fff",
+						background: "var(--dc-card-bg, #fff)",
+						color: "var(--dc-card-fg, #18181b)",
 						border: "1px solid #e4e4e7",
 						borderRadius: 6,
 						boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
@@ -892,6 +921,8 @@ export function Combobox({
 								padding: "4px 8px",
 								fontSize: "0.9em",
 								boxSizing: "border-box",
+								background: "var(--dc-input-bg, #fff)",
+								color: "var(--dc-input-fg, #18181b)",
 							}}
 						/>
 					</div>
@@ -921,7 +952,7 @@ export function Combobox({
 										border: "none",
 										padding: "6px 10px",
 										fontSize: "0.9em",
-										color: "#888",
+										color: "var(--dc-text-subtle, #52525b)",
 										fontStyle: "italic",
 										cursor: "pointer",
 									}}
@@ -934,7 +965,7 @@ export function Combobox({
 							<li
 								style={{
 									padding: "8px 10px",
-									color: "#888",
+									color: "var(--dc-text-subtle, #52525b)",
 									fontSize: "0.9em",
 								}}
 							>
@@ -955,6 +986,7 @@ export function Combobox({
 											border: "none",
 											padding: "6px 10px",
 											fontSize: "0.9em",
+											color: "var(--dc-card-fg, #18181b)",
 											cursor: opt.disabled ? "not-allowed" : "pointer",
 											opacity: opt.disabled ? 0.5 : 1,
 											display: "flex",
@@ -964,7 +996,7 @@ export function Combobox({
 									>
 										<span>{opt.label}</span>
 										{opt.hint && (
-											<span style={{ color: "#888", fontSize: "0.85em" }}>
+											<span style={{ color: "var(--dc-text-subtle, #52525b)", fontSize: "0.85em" }}>
 												{opt.hint}
 											</span>
 										)}
@@ -1066,7 +1098,8 @@ export function MultiSelect({
 					borderRadius: 6,
 					padding: 4,
 					minHeight: 32,
-					background: disabled ? "#f4f4f5" : "#fff",
+					background: disabled ? "#f4f4f5" : "var(--dc-input-bg, #fff)",
+					color: "var(--dc-input-fg, #18181b)",
 					cursor: disabled ? "not-allowed" : "text",
 				}}
 				onClick={() => !disabled && setOpen(true)}
@@ -1128,6 +1161,7 @@ export function MultiSelect({
 						border: "none",
 						outline: "none",
 						background: "transparent",
+						color: "var(--dc-input-fg, #18181b)",
 						padding: "2px 4px",
 						fontSize: "0.9em",
 						flex: "1 1 80px",
@@ -1143,7 +1177,8 @@ export function MultiSelect({
 						left: 0,
 						right: 0,
 						zIndex: 50,
-						background: "#fff",
+						background: "var(--dc-card-bg, #fff)",
+						color: "var(--dc-card-fg, #18181b)",
 						border: "1px solid #e4e4e7",
 						borderRadius: 6,
 						boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
@@ -1156,7 +1191,7 @@ export function MultiSelect({
 							<li
 								style={{
 									padding: "8px 10px",
-									color: "#888",
+									color: "var(--dc-text-subtle, #52525b)",
 									fontSize: "0.9em",
 								}}
 							>
@@ -1177,6 +1212,7 @@ export function MultiSelect({
 												border: "none",
 												padding: "6px 10px",
 												fontSize: "0.9em",
+												color: "var(--dc-card-fg, #18181b)",
 												cursor: "pointer",
 												display: "flex",
 												justifyContent: "space-between",
@@ -1198,7 +1234,7 @@ export function MultiSelect({
 												{opt.label}
 											</span>
 											{opt.hint && (
-												<span style={{ color: "#888", fontSize: "0.85em" }}>
+												<span style={{ color: "var(--dc-text-subtle, #52525b)", fontSize: "0.85em" }}>
 													{opt.hint}
 												</span>
 											)}
@@ -1227,7 +1263,7 @@ export function Money({
 	locale?: string;
 	strong?: boolean;
 }): ReactNode {
-	if (!value) return <span style={{ color: "#888" }}>—</span>;
+	if (!value) return <span style={{ color: "var(--dc-text-subtle, #52525b)" }}>—</span>;
 	const text = formatMoney(value, locale ?? "en-US");
 	if (strong) return <strong>{text}</strong>;
 	return <span>{text}</span>;
@@ -1364,10 +1400,12 @@ export function DateRangePicker({ value, onChange, presets = true }: DateRangePi
 					border: `1px solid ${invalid ? "#b91c1c" : "var(--dc-border, #d4d4d8)"}`,
 					borderRadius: 6,
 					padding: "4px 8px",
+					background: "var(--dc-input-bg, #fff)",
+					color: "var(--dc-input-fg, #18181b)",
 				}}
 				aria-label="Start date"
 			/>
-			<span aria-hidden>→</span>
+			<span aria-hidden style={{ color: "var(--dc-card-fg, #18181b)" }}>→</span>
 			<input
 				type="date"
 				value={value.to}
@@ -1378,6 +1416,8 @@ export function DateRangePicker({ value, onChange, presets = true }: DateRangePi
 					border: `1px solid ${invalid ? "#b91c1c" : "var(--dc-border, #d4d4d8)"}`,
 					borderRadius: 6,
 					padding: "4px 8px",
+					background: "var(--dc-input-bg, #fff)",
+					color: "var(--dc-input-fg, #18181b)",
 				}}
 				aria-label="End date"
 			/>
@@ -1389,18 +1429,18 @@ export function DateRangePicker({ value, onChange, presets = true }: DateRangePi
 						onClick={() => onChange(p.range())}
 						style={{
 							border: "1px solid var(--dc-border, #d4d4d8)",
-							background: "#fff",
+							background: "var(--dc-card-bg, #fff)",
 							borderRadius: 4,
 							padding: "2px 8px",
 							fontSize: "0.8em",
-							color: "#444",
+							color: "var(--dc-card-fg, #18181b)",
 							cursor: "pointer",
 						}}
 					>
 						{p.label}
 					</button>
 				))}
-			<span style={{ fontSize: "0.75em", color: "#888" }}>{tz}</span>
+			<span style={{ fontSize: "0.75em", color: "var(--dc-text-subtle, #52525b)" }}>{tz}</span>
 			{invalid && (
 				<span style={{ fontSize: "0.78em", color: "#b91c1c" }}>
 					Start date must be on or before end date.

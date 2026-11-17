@@ -150,7 +150,7 @@ export function BgTypeSelect(props: BgTypeSelectProps) {
 				gap: 4,
 				margin: "0.5rem 0",
 				fontSize: "0.85em",
-				color: "var(--dc-label, #444)",
+				color: "var(--dc-label, #3f3f46)",
 			}}
 		>
 			{label && <span>{label}</span>}
@@ -166,17 +166,17 @@ export function BgTypeSelect(props: BgTypeSelectProps) {
 					padding: "6px 10px",
 					fontSize: "0.95em",
 					background: "var(--dc-input-bg, #fff)",
-					color: "var(--dc-text, inherit)",
+					color: "var(--dc-input-fg, #18181b)",
 				}}
 			>
-				<option value="gradient">Gradient (CSS)</option>
-				<option value="image">Image</option>
-				<option value="video">Video (URL)</option>
+				<option value="gradient" style={{ background: "#fff", color: "#18181b" }}>Gradient (CSS)</option>
+				<option value="image" style={{ background: "#fff", color: "#18181b" }}>Image</option>
+				<option value="video" style={{ background: "#fff", color: "#18181b" }}>Video (URL)</option>
 			</select>
 			<span
 				style={{
 					fontSize: "0.75em",
-					color: "var(--dc-hint, #6b7280)",
+					color: "var(--dc-hint, #52525b)",
 					marginTop: 2,
 				}}
 			>
