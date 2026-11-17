@@ -126,16 +126,16 @@ To prove the core extensibility seam functions end-to-end without requiring any 
 
 ## 4. Verification & Test Evidence
 
-All checks have been executed locally across the entire monorepo:
+All checks have been executed locally across the upstream repository:
 1. **Automated Unit & Integration Tests:**
    ```bash
    bun test
-   # 186 pass, 0 fail, 478 expect() calls across 26 files (843ms)
+   # 138 pass, 0 fail, 252 expect() calls across 16 files (447ms)
    ```
 2. **TypeScript Compilation:**
    ```bash
    bun run typecheck
-   # All packages (@dashcommerce/core, paystack, palpluss, pos, create, starter) compile clean (0 errors).
+   # All packages (@dashcommerce/core, @dashcommerce/create, @dashcommerce/starter) compile clean (0 errors).
    ```
 3. **Monorepo Build:**
    ```bash
@@ -143,4 +143,4 @@ All checks have been executed locally across the entire monorepo:
    # All packages and the Astro Cloudflare starter built cleanly without errors.
    ```
 
-We look forward to your thoughts and are ready to push the updated commits once you confirm.
+We look forward to your thoughts and review.
