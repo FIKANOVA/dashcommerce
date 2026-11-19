@@ -173,6 +173,7 @@ export const stripePaymentProvider: PaymentProvider = {
 	},
 	// On-page is Stripe Elements through checkout/create-intent, unchanged.
 	checkoutStyles: ["hosted", "on_page"],
+	collectsCustomerDetails: true,
 
 	async checkConnection(ctx, credentials) {
 		try {
