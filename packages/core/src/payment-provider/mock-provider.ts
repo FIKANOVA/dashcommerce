@@ -27,6 +27,10 @@ export interface MockPaymentProviderOptions {
 	/** When set, `getPaymentStatus` is omitted so callers trust the webhook payload. */
 	omitGetPaymentStatus?: boolean;
 	getPaymentStatusResult?: PaymentStatusResult;
+	/** Declare on-page checkout and return `on_page` results when asked. */
+	onPageCheckout?: boolean;
+	/** When set, the provider has a `checkConnection` returning this. */
+	checkConnectionResult?: { ok: boolean; detail?: string };
 }
 
 function appendQueryParam(urlString: string, key: string, value: string): string {
@@ -47,6 +51,14 @@ export function createMockPaymentProvider(
 		id: providerId,
 		label: `Mock (${providerId})`,
 		...(options.capabilities ? { capabilities: options.capabilities } : {}),
+		...(options.onPageCheckout ? { checkoutStyles: ["hosted", "on_page"] as const } : {}),
+		...(options.checkConnectionResult
+			? {
+					async checkConnection() {
+						return options.checkConnectionResult as { ok: boolean; detail?: string };
+					},
+				}
+			: {}),
 
 		supportsCurrency(currency: string): boolean {
 			if (!currency || typeof currency !== "string") return false;
@@ -58,6 +70,9 @@ export function createMockPaymentProvider(
 				throw new Error("MockPaymentProvider: forced initCheckout failure");
 			}
 			const checkoutReference = `mock_ref_${input.orderDraftId}`;
+			if (options.onPageCheckout && input.checkoutStyle === "on_page") {
+				return { kind: "on_page", checkoutReference, client: { reference: checkoutReference } };
+			}
 			if (options.asyncPendingCheckout) {
 				return { kind: "pending", checkoutReference };
 			}

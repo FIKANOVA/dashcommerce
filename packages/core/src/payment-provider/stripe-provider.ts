@@ -15,7 +15,7 @@ import {
 	type StripeCheckoutSession,
 	createCheckoutSession,
 } from "../stripe/checkout-sessions";
-import type { StripeClientOptions } from "../stripe/client";
+import { call as stripeCall, type StripeClientOptions } from "../stripe/client";
 import { type StripePaymentIntent, retrievePaymentIntent } from "../stripe/payment-intents";
 import { createRefund as stripeCreateRefund } from "../stripe/refunds";
 import { verifyStripeSignature } from "../stripe/webhook-verify";
@@ -165,10 +165,28 @@ function parseStripeEvent(rawBody: string): {
 export const stripePaymentProvider: PaymentProvider = {
 	id: "stripe",
 	label: "Stripe",
+	description: "Cards, wallets and local payment methods worldwide.",
 	capabilities: {
 		coupons: true,
 		connect: true,
 		subscriptions: true,
+	},
+	// On-page is Stripe Elements through checkout/create-intent, unchanged.
+	checkoutStyles: ["hosted", "on_page"],
+
+	async checkConnection(ctx, credentials) {
+		try {
+			const account = await stripeCall<{ id: string; charges_enabled?: boolean }>(
+				ctx as unknown as PluginContext,
+				{ method: "GET", path: "/account", client: toStripeClient(credentials) },
+			);
+			return {
+				ok: true,
+				detail: `Connected to ${account.id}${account.charges_enabled === false ? " (charges not yet enabled)" : ""}`,
+			};
+		} catch (err) {
+			return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+		}
 	},
 
 	supportsCurrency(currency: string): boolean {
