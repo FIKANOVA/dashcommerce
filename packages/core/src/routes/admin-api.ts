@@ -49,6 +49,7 @@ import {
 } from "../settings/schema";
 import { normalizeCurrencyList } from "../data/currencies";
 import { listPaymentProviders, providerCredentialSetting } from "../payment-provider";
+import { keysSavedAtKey } from "./setup";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -1961,8 +1962,15 @@ export const adminApiRoutes = {
 				if (!report.ok) {
 					return json({ error: "invalid_settings", errors: report.errors }, 400);
 				}
+				const savedAt = Date.now();
 				for (const [k, v] of Object.entries(report.values)) {
 					await ctx.kv.set(`settings:${k}`, v);
+					// New keys need a fresh connection check (routes/setup.ts).
+					const credentialOf =
+						k === "stripeSecretKey" || k === "stripeWebhookSecret"
+							? "stripe"
+							: providerCredentialSetting(k)?.providerId;
+					if (credentialOf) await ctx.kv.set(keysSavedAtKey(credentialOf), savedAt);
 				}
 				return json({ ok: true });
 			}

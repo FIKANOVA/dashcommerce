@@ -52,6 +52,7 @@ import { validateEmDashCompatibility } from "./version-check";
 import { reviewsPublicRoutes } from "./routes/reviews-public";
 import { subscriptionsPublicRoutes } from "./routes/subscriptions-public";
 import { webhookRoutes } from "./routes/webhook";
+import { setupRoutes } from "./routes/setup";
 import { DASHCOMMERCE_STORAGE } from "./storage-collections";
 
 const DEFAULT_CAPABILITIES: PluginCapability[] = [
@@ -95,6 +96,7 @@ export const ROUTES = {
 	...subscriptionsPublicRoutes,
 	...webhookRoutes,
 	...adminApiRoutes,
+	...setupRoutes,
 } as unknown as Record<string, CommerceRouteEntry>;
 
 /**

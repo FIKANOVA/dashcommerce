@@ -116,6 +116,7 @@ export function makeRouteContext(
 		},
 		http: { fetch: fetchImpl },
 		site: { url: "https://shop.example", name: "Shop" },
+		plugin: { id: "dashcommerce" },
 		url: (p: string) => `https://shop.example${p}`,
 		log: { debug: log("debug"), info: log("info"), warn: log("warn"), error: log("error") },
 	} as unknown as PluginContext;
