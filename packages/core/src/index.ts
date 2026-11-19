@@ -122,6 +122,7 @@ export function dashcommerce(options: DashCommerceOptions = {}): PluginDescripto
 			{ path: "/settings", label: "Settings", icon: "settings" },
 		],
 		adminWidgets: [
+			{ id: "payments-setup", title: "Payments", size: "third" },
 			{ id: "revenue-snapshot", title: "Revenue", size: "half" },
 			{ id: "low-stock-alerts", title: "Low Stock", size: "half" },
 			{ id: "recent-orders", title: "Recent Orders", size: "full" },

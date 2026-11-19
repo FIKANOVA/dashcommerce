@@ -52,6 +52,19 @@ async function activeProviderId(ctx: PluginContext): Promise<string> {
 	return (await ctx.kv.get<string>("settings:paymentProvider")) ?? DEFAULT_PAYMENT_PROVIDER_ID;
 }
 
+/**
+ * The provider the merchant has chosen, or null on a fresh store: an explicit
+ * `settings:paymentProvider`, else Stripe when its keys exist (stores set up
+ * before provider choice existed). Payments still default to Stripe at
+ * runtime; this only drives what the settings screen shows as selected.
+ */
+async function chosenProviderId(ctx: PluginContext): Promise<string | null> {
+	const explicit = await ctx.kv.get<string>("settings:paymentProvider");
+	if (explicit) return explicit;
+	const stripeKey = await ctx.kv.get<string>("settings:stripeSecretKey");
+	return stripeKey ? "stripe" : null;
+}
+
 /** Whether the active provider can take payments (see the module comment). */
 export async function isPaymentSetUp(ctx: PluginContext): Promise<boolean> {
 	const providerId = await activeProviderId(ctx);
@@ -84,12 +97,24 @@ function credentialKeys(providerId: string): [string, string] {
 		: [`${providerId}SecretKey`, `${providerId}WebhookSecret`];
 }
 
+/** Only https URLs and image data URIs reach an <img src>. */
+function safeLogo(logo: string | undefined): string | null {
+	if (!logo) return null;
+	return /^https:\/\//i.test(logo) || /^data:image\/(svg\+xml|png|webp|jpeg);/i.test(logo)
+		? logo
+		: null;
+}
+
 async function providerRow(ctx: PluginContext, provider: PaymentProvider, currency: string) {
 	const [secretKey, webhookSecret] = credentialKeys(provider.id);
 	return {
 		id: provider.id,
 		label: provider.label,
 		description: provider.description ?? null,
+		logo: safeLogo(provider.logo),
+		brandColour: /^#[0-9a-f]{6}$/i.test(provider.brandColour ?? "") ? provider.brandColour : null,
+		highlights: [...(provider.highlights ?? [])].slice(0, 6),
+		webhookUrl: webhookUrl(ctx, provider.id),
 		checkoutStyles: providerCheckoutStyles(provider),
 		supportsDefaultCurrency: provider.supportsCurrency(currency),
 		canCheckConnection: typeof provider.checkConnection === "function",
@@ -123,6 +148,7 @@ export const setupRoutes = {
 			return json({
 				setUp: await isPaymentSetUp(ctx),
 				activeProviderId: providerId,
+				chosenProviderId: await chosenProviderId(ctx),
 				checkoutMode: (await ctx.kv.get<string>("settings:checkoutMode")) ?? "hosted",
 				defaultCurrency: currency,
 				webhookUrl: webhookUrl(ctx, providerId),

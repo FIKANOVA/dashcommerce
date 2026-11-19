@@ -168,3 +168,60 @@ describe("setup status payload", () => {
 		expect(check.status).toBe(400);
 	});
 });
+
+describe("what the payments section needs (design A)", () => {
+	it("a fresh store has no provider chosen, so nothing is pre-selected", async () => {
+		registerAcme();
+		const { ctx } = makeRouteContext({});
+		const { body } = await route(ctx, "admin/setup/status");
+		expect(body.chosenProviderId).toBeNull();
+	});
+
+	it("an existing Stripe store has Stripe chosen", async () => {
+		registerAcme();
+		const { ctx } = makeRouteContext({ "settings:stripeSecretKey": "sk_test_1234567890abcdef" });
+		expect((await route(ctx, "admin/setup/status")).body.chosenProviderId).toBe("stripe");
+	});
+
+	it("an explicit choice wins", async () => {
+		registerAcme();
+		const { ctx } = makeRouteContext({
+			"settings:paymentProvider": "acme",
+			"settings:stripeSecretKey": "sk_test_1234567890abcdef",
+		});
+		expect((await route(ctx, "admin/setup/status")).body.chosenProviderId).toBe("acme");
+	});
+
+	it("each provider carries its own webhook URL, logo, brand colour and highlights", async () => {
+		registerPaymentProvider(
+			{
+				...createMockPaymentProvider({ id: "brandy" }),
+				label: "Brandy",
+				logo: "https://cdn.example/brandy.svg",
+				brandColour: "#123456",
+				highlights: ["Card", "M-Pesa"],
+			},
+			{ override: true },
+		);
+		const { ctx } = makeRouteContext({});
+		const providers = (await route(ctx, "admin/setup/status")).body.providers as Json[];
+		expect(providers.find((p) => p.id === "brandy")).toMatchObject({
+			logo: "https://cdn.example/brandy.svg",
+			brandColour: "#123456",
+			highlights: ["Card", "M-Pesa"],
+			webhookUrl:
+				"https://shop.example/_emdash/api/plugins/dashcommerce/checkout/webhook?provider=brandy",
+		});
+		expect(providers.find((p) => p.id === "stripe")).toMatchObject({ logo: null, highlights: [] });
+	});
+
+	it("refuses a logo that isn't an https URL or an image data URI", async () => {
+		registerPaymentProvider(
+			{ ...createMockPaymentProvider({ id: "sneaky" }), logo: "javascript:alert(1)" },
+			{ override: true },
+		);
+		const { ctx } = makeRouteContext({});
+		const providers = (await route(ctx, "admin/setup/status")).body.providers as Json[];
+		expect(providers.find((p) => p.id === "sneaky")?.logo).toBeNull();
+	});
+});

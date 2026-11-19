@@ -29,6 +29,7 @@ import {
 	usePluginAPI,
 } from "../kit";
 import type { CheckoutMode, TaxMode } from "../../settings/schema";
+import { PaymentProvidersSection } from "./PaymentProvidersSection";
 
 type Group =
 	| "store"
@@ -54,8 +55,9 @@ const GROUPS: GroupSpec[] = [
 	},
 	{
 		id: "provider",
-		title: "Payment provider",
-		description: "Who takes payment at checkout.",
+		title: "Payments",
+		description:
+			"Choose who takes payment at checkout. You can switch later; earlier orders can still be refunded.",
 	},
 	{
 		id: "stripe",
@@ -163,6 +165,7 @@ export function SettingsPage() {
 	const [saving, setSaving] = useState(false);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	const [errors, setErrors] = useState<Record<string, string>>({});
+	const [refreshKey, setRefreshKey] = useState(0);
 	const touched = useRef(new Set<keyof Draft>());
 
 	const reload = useCallback(async () => {
@@ -170,6 +173,7 @@ export function SettingsPage() {
 		try {
 			const s = await api.get<SettingsShape>("admin/settings");
 			setSaved(s);
+			setRefreshKey((k) => k + 1);
 			setDraft({});
 			setErrors({});
 			touched.current.clear();
@@ -277,11 +281,22 @@ export function SettingsPage() {
 
 	const activeProviderId = (effective("paymentProvider") as string | null | undefined) ?? "stripe";
 	const activeProvider = saved._providers?.find((p) => p.id === activeProviderId);
-	const needsStripeKey = activeProviderId === "stripe" && !saved._secrets?.stripeSecretKey?.isSet;
-	const needsProviderKey =
-		activeProviderId !== "stripe" && activeProvider?.secrets?.secretKey.isSet === false;
+	// With more than one provider registered, Settings › Payments handles the
+	// choice and setup (and its own "not set up" banner). A Stripe-only store
+	// keeps the classic Stripe card and warnings exactly as before.
 	const showProviderPicker = (saved._providers?.length ?? 0) > 1;
-	const stripeActive = activeProviderId === "stripe";
+	const needsStripeKey =
+		!showProviderPicker && activeProviderId === "stripe" && !saved._secrets?.stripeSecretKey?.isSet;
+	const needsProviderKey =
+		!showProviderPicker &&
+		activeProviderId !== "stripe" &&
+		activeProvider?.secrets?.secretKey.isSet === false;
+	// On a fresh store with a picker nothing is chosen yet (null).
+	const selectedProviderId = showProviderPicker
+		? ((effective("paymentProvider") as string | null | undefined) ??
+			(saved._secrets?.stripeSecretKey?.isSet ? "stripe" : null))
+		: activeProviderId;
+	const stripeActive = selectedProviderId === "stripe";
 	const stripeKeysSaved =
 		!!saved._secrets?.stripeSecretKey?.isSet || !!saved._secrets?.stripeWebhookSecret?.isSet;
 
@@ -292,6 +307,8 @@ export function SettingsPage() {
 	 */
 	function groupView(group: GroupSpec): GroupSpec | null {
 		if (group.id === "provider") return showProviderPicker ? group : null;
+		// Stripe's keys live in Payments when Stripe is the chosen provider.
+		if (group.id === "stripe" && showProviderPicker && stripeActive) return null;
 		if (stripeActive) return group;
 		if (group.id === "stripe") {
 			return stripeKeysSaved
@@ -352,6 +369,17 @@ export function SettingsPage() {
 							{group.description}
 						</p>
 					)}
+					{group.id === "provider" ? (
+						<PaymentProvidersSection
+							getValue={(key) => effective(key as keyof Draft)}
+							setField={(key, value) => setField(key as keyof Draft, value as Draft[keyof Draft])}
+							errors={errors}
+							disabled={saving}
+							dirty={isDirty}
+							refreshKey={refreshKey}
+							stripeSecrets={saved._secrets ?? {}}
+						/>
+					) : (
 					<GroupBody
 						group={group.id}
 						saved={saved}
@@ -363,6 +391,7 @@ export function SettingsPage() {
 						setField={setField}
 						disabled={saving}
 					/>
+					)}
 				</Card>
 			))}
 
@@ -447,71 +476,6 @@ function GroupBody({
 						{...(errors.defaultCurrency ? { invalid: true } : {})}
 					/>
 				</FormField>
-			</>
-		);
-	}
-
-	if (group === "provider") {
-		const providers = saved._providers ?? [];
-		const selectedId = (eff("paymentProvider", saved, draft) as string | null) ?? "stripe";
-		const selected = providers.find((p) => p.id === selectedId);
-		return (
-			<>
-				<FormField label="Provider" error={errors.paymentProvider}>
-					<Select
-						value={selectedId}
-						options={providers.map((p) => ({ value: p.id, label: p.label }))}
-						onChange={(e) => setField("paymentProvider", e.currentTarget.value)}
-						disabled={disabled}
-					/>
-				</FormField>
-				{selected && selected.id !== "stripe" && (
-					<>
-						<p style={{ color: "#666", margin: "0 0 0.75rem", fontSize: "0.9em" }}>
-							Customers pay on {selected.label}'s hosted page and come back to your
-							store.
-						</p>
-						{eff("checkoutMode", saved, draft) === "embedded" && (
-							<Alert type="warning" title="Checkout is set to embedded">
-								DashCommerce's embedded checkout is built on Stripe's payment form, so
-								it cannot run {selected.label} yet, and checkout will refuse payments
-								until it is set to hosted.{" "}
-								<Button
-									variant="secondary"
-									onClick={() => setField("checkoutMode", "hosted")}
-									disabled={disabled}
-								>
-									Switch to hosted
-								</Button>
-							</Alert>
-						)}
-						<SecretField
-							keyName={`${selected.id}SecretKey`}
-							label={selected.credentialFields?.secretKey?.label ?? `${selected.label} secret key`}
-							description={credentialDescription(selected.credentialFields?.secretKey)}
-							meta={selected.secrets?.secretKey}
-							saved={saved}
-							draft={draft}
-							errors={errors}
-							setField={setField}
-							disabled={disabled}
-						/>
-						<SecretField
-							keyName={`${selected.id}WebhookSecret`}
-							label={
-								selected.credentialFields?.webhookSecret?.label ??
-								`${selected.label} webhook secret`
-							}
-							description={credentialDescription(selected.credentialFields?.webhookSecret)}
-							meta={selected.secrets?.webhookSecret}
-							saved={saved}
-							draft={draft}
-							errors={errors}
-							setField={setField}
-							disabled={disabled}
-						/>
-					</>
-				)}
 			</>
 		);
 	}
@@ -737,14 +701,6 @@ function GroupBody({
 	}
 
 	return null;
-}
-
-/** "Starts with sk_test_ or rk_test_. From the dashboard." from a provider's field spec. */
-function credentialDescription(field: CredentialField | undefined): string | undefined {
-	const parts: string[] = [];
-	if (field?.prefixes?.length) parts.push(`Starts with ${field.prefixes.join(" or ")}.`);
-	if (field?.help) parts.push(field.help);
-	return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function SecretField({

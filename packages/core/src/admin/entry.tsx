@@ -30,6 +30,7 @@ import { VendorSelect } from "./fields/VendorSelect";
 
 import { FailedSubscriptions } from "./widgets/FailedSubscriptions";
 import { LowStockAlerts } from "./widgets/LowStockAlerts";
+import { PaymentsSetup } from "./widgets/PaymentsSetup";
 import { PendingReviews } from "./widgets/PendingReviews";
 import { RecentOrders } from "./widgets/RecentOrders";
 import { RevenueSnapshot } from "./widgets/RevenueSnapshot";
@@ -71,6 +72,7 @@ export const pages: Record<string, ComponentType> = {
 };
 
 export const widgets: Record<string, ComponentType> = {
+	"payments-setup": PaymentsSetup,
 	"revenue-snapshot": RevenueSnapshot,
 	"low-stock-alerts": LowStockAlerts,
 	"recent-orders": RecentOrders,
