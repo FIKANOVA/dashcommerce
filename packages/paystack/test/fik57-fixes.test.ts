@@ -367,9 +367,11 @@ describe("refund: double-refund guard", () => {
 });
 
 describe("getPaymentStatus: full transaction-status mapping", () => {
-	it("treats a refunded transaction (live reversal-pending response) as paid", async () => {
+	it("treats a partly refunded transaction (live reversal-pending response) as paid", async () => {
 		const { ctx } = fakePaystack({
 			"GET /transaction/verify/T877626421263494": () => json(verifyReversalPending),
+			// The live refund list for it: KES 200 of KES 1,000 refunded.
+			"GET /refund": () => json(refundList),
 		});
 		const status = await paystackPaymentProvider.getPaymentStatus?.(
 			ctx,
@@ -400,6 +402,7 @@ describe("getPaymentStatus: full transaction-status mapping", () => {
 						...verifyReversalPending,
 						data: { ...verifyReversalPending.data, status: paystackStatus },
 					}),
+				"GET /refund": () => json(emptyRefundList),
 			});
 			const status = await paystackPaymentProvider.getPaymentStatus?.(ctx, "dc-x", credentials);
 			expect({ paystackStatus, status: status?.status }).toEqual({
@@ -596,5 +599,53 @@ describe("refund guard: fails loudly", () => {
 			),
 		).rejects.toThrow(/pages of refunds/);
 		expect(calls.some((c) => c.method === "POST")).toBe(false);
+	});
+});
+
+describe("getPaymentStatus: a payment refunded in full before its order exists", () => {
+	// Paystack reports `reversed` / `reversal-pending` after partial refunds
+	// too, so only the refunded total can tell a fully returned payment apart.
+	const refunds = (...rows: Array<[number, string, number]>) => ({
+		...emptyRefundList,
+		data: rows.map(([id, status, amount]) => ({
+			id,
+			status,
+			amount,
+			currency: "KES",
+			transaction_reference: "dc-x",
+		})),
+		meta: { ...emptyRefundList.meta, total: rows.length, pageCount: 1 },
+	});
+	const verifyAs = (status: string) => () =>
+		json({ ...verifyReversalPending, data: { ...verifyReversalPending.data, status } });
+
+	it("does not confirm a payment whose refunds add up to the whole amount", async () => {
+		for (const status of ["reversed", "reversal-pending"]) {
+			const { ctx } = fakePaystack({
+				"GET /transaction/verify/dc-x": verifyAs(status),
+				"GET /refund": () => json(refunds([1, "processed", 60000], [2, "pending", 40000])),
+			});
+			const result = await paystackPaymentProvider.getPaymentStatus?.(ctx, "dc-x", credentials);
+			expect(result?.status).toBe("failed");
+			expect(result?.reason).toContain("refunded in full");
+		}
+	});
+
+	it("leaves failed refunds out of the total", async () => {
+		const { ctx } = fakePaystack({
+			"GET /transaction/verify/dc-x": verifyAs("reversed"),
+			"GET /refund": () => json(refunds([1, "failed", 100000], [2, "processed", 10000])),
+		});
+		const result = await paystackPaymentProvider.getPaymentStatus?.(ctx, "dc-x", credentials);
+		expect(result?.status).toBe("succeeded");
+	});
+
+	it("does not list refunds for a transaction that was never reversed", async () => {
+		const { ctx, calls } = fakePaystack({
+			"GET /transaction/verify/dc-x": verifyAs("success"),
+		});
+		const result = await paystackPaymentProvider.getPaymentStatus?.(ctx, "dc-x", credentials);
+		expect(result?.status).toBe("succeeded");
+		expect(calls.map((c) => c.url)).toEqual(["https://api.paystack.co/transaction/verify/dc-x"]);
 	});
 });

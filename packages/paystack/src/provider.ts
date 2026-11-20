@@ -154,10 +154,11 @@ interface PaystackRefundPage {
  * Transaction statuses from https://paystack.com/docs/payments/verify-payments/,
  * plus `reversal-pending`, which the docs omit but /transaction/verify returns
  * once a refund has started (seen on the test account, 19 Nov 2026).
- * A reversed transaction was paid; the refund is tracked on its own. Core
- * reads only paid-or-not here, so a payment refunded in full from the Paystack
- * dashboard before a late webhook retry would still be confirmed; core needs
- * refunded amounts to close that (proposed upstream).
+ * A reversed transaction was paid: Paystack reports `reversed` and
+ * `reversal-pending` after partial refunds too, and those refunds are tracked
+ * on their own. `getPaymentStatus` refuses only one that has been refunded in
+ * full, so a late webhook retry cannot create an order for money already
+ * returned.
  * `abandoned` is not final: the customer may still complete the payment.
  */
 const TRANSACTION_STATUS: Record<string, "pending" | "succeeded" | "failed"> = {
@@ -195,6 +196,8 @@ function merchantNoteFor(refundRequestId: string, reason?: string): string {
 	const text = reason?.replace(/[()]/g, "").trim();
 	return text ? `${text} ${tag}` : tag;
 }
+
+const REVERSED = new Set(["reversed", "reversal-pending"]);
 
 const REFUND_PAGE_SIZE = 100;
 const MAX_REFUND_PAGES = 20;
@@ -237,6 +240,28 @@ async function findRefundForRequest(
 
 	matches.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id - b.id);
 	return matches[0];
+}
+
+/** Sum of a transaction's refunds that have not failed, in minor units. */
+async function refundedTotal(
+	ctx: PaymentProviderRuntimeContext,
+	client: PaystackClientOptions,
+	transactionId: number,
+): Promise<number> {
+	let total = 0;
+	for (let page = 1, pageCount = 1; page <= pageCount; page += 1) {
+		if (page > MAX_REFUND_PAGES) {
+			throw new Error(
+				`Paystack lists more than ${MAX_REFUND_PAGES} pages of refunds for one transaction`,
+			);
+		}
+		const result = await listRefundPage(ctx, client, transactionId, page);
+		for (const refund of result.data) {
+			if (refund.status !== "failed" && typeof refund.amount === "number") total += refund.amount;
+		}
+		pageCount = result.pageCount;
+	}
+	return total;
 }
 
 async function listRefundPage(
@@ -589,6 +614,18 @@ export const paystackPaymentProvider: PaymentProvider = {
 		});
 
 		const status = TRANSACTION_STATUS[data.status];
+		if (REVERSED.has(data.status) && Number.isSafeInteger(data.id)) {
+			const refunded = await refundedTotal(ctx, client, data.id);
+			if (refunded >= data.amount) {
+				return {
+					status: "failed",
+					paymentReference: data.reference,
+					amount: data.amount,
+					currency: data.currency?.toUpperCase(),
+					reason: `Payment was refunded in full at Paystack (${refunded} of ${data.amount})`,
+				};
+			}
+		}
 		return {
 			status: status ?? "pending",
 			paymentReference: data.reference,
