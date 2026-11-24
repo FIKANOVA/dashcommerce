@@ -324,8 +324,12 @@ const paystackSettings = {
 	"settings:paystackWebhookSecret": SECRET_KEY,
 };
 
-async function startCheckout(ctx: import("emdash").PluginContext, sessionId: string) {
-	await ctx.kv.set(`cart:${sessionId}`, ticketCart(sessionId));
+async function startCheckout(
+	ctx: import("emdash").PluginContext,
+	sessionId: string,
+	options: { keepCart?: boolean } = {},
+) {
+	if (!options.keepCart) await ctx.kv.set(`cart:${sessionId}`, ticketCart(sessionId));
 	const request = new Request("http://test/checkout/create-session", {
 		method: "POST",
 		headers: { "Content-Type": "application/json", Cookie: `dashcommerce_sid=${sessionId}` },
@@ -527,6 +531,54 @@ describe("@dashcommerce/paystack through core", () => {
 		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
 		expect(res.status).toBe(200);
 		expect(getCol("orders").size).toBe(1);
+	});
+
+	it("takes a cart coupon: Paystack charges the discounted total and the order keeps the discount", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(paystackSettings, paystack.fetch);
+		const now = new Date().toISOString();
+		getCol("coupons").set("coupon_matchday", {
+			code: "MATCHDAY10",
+			discountType: "percent_cart",
+			discountValue: 10,
+			status: "active",
+			excludeSaleItems: false,
+			usageCount: 0,
+			individualUse: false,
+			createdAt: now,
+			updatedAt: now,
+		});
+
+		const sessionId = "sess_paystack_coupon";
+		await ctx.kv.set(`cart:${sessionId}`, ticketCart(sessionId));
+		const applyCtx = {
+			...ctx,
+			request: new Request("http://test/cart/coupon", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Cookie: `dashcommerce_sid=${sessionId}` },
+			}),
+			input: { code: "matchday10" },
+		} as unknown as import("emdash").RouteContext;
+		const applied = (await sandbox.routes["cart/coupon"].handler(applyCtx, ctx)) as Response;
+		expect(applied.status).toBe(200);
+
+		// Before Paystack declared coupons, this answered 409 "does not support: coupons".
+		const initRes = await startCheckout(ctx, sessionId, { keepCart: true });
+		expect(initRes.status).toBe(200);
+		const { orderDraftId } = (await initRes.json()) as { orderDraftId: string };
+		expect(paystack.getLastInit()?.amount).toBe(135000);
+
+		const reference = String(paystack.getLastInit()?.reference);
+		const tx = paystack.transactions.get(reference);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const payload = chargeSuccess(reference, orderDraftId, tx.id, 135000);
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.total.amount).toBe(135000);
+		expect(order.discountTotal.amount).toBe(15000);
+		expect(order.status).not.toBe("on-hold");
 	});
 
 	it("sends Paystack a callback URL without Stripe's session placeholder", async () => {
