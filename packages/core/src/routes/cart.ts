@@ -32,6 +32,7 @@ import type { PluginContext, RouteContext } from "emdash";
 import { randomId } from "../util/ids";
 import { getCart, getOrCreate, save, switchCurrency } from "../cart/store";
 import { recalculate, type PricingPolicy } from "../cart/calculate";
+import { loadTableTaxResolver } from "../tax/rates";
 import { verifyRestoreToken } from "../abandoned-cart/recover";
 import { resolveDiscount, validateCoupon } from "../coupons/validate";
 import { refreshAppliedCoupons } from "../coupons/refresh";
@@ -111,6 +112,9 @@ async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 	};
 	if (mode === "flat" || mode !== "table") {
 		policy.flatTaxPercent = pct;
+	}
+	if (policy.taxMode === "table") {
+		policy.taxResolver = await loadTableTaxResolver(ctx);
 	}
 	return policy;
 }
