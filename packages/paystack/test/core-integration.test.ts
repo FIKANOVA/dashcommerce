@@ -888,3 +888,114 @@ describe("@dashcommerce/paystack with core enablement", () => {
 		expect(paystack.getVerifyCalls()).toBe(1);
 	});
 });
+
+describe("@dashcommerce/paystack multi-vendor through core", () => {
+	function vendorWithPaystack(id: string) {
+		return {
+			id,
+			stripeAccountId: "",
+			name: `Vendor ${id}`,
+			email: `${id}@example.com`,
+			onboardingStatus: "active",
+			platformFeePercent: 0,
+			detailsSubmitted: false,
+			chargesEnabled: false,
+			payoutsEnabled: false,
+			paymentAccounts: {
+				paystack: {
+					accountReference: `ACCT_${id}`,
+					status: "active",
+					updatedAt: "2026-01-01T00:00:00Z",
+				},
+			},
+			createdAt: "2026-01-01T00:00:00Z",
+			updatedAt: "2026-01-01T00:00:00Z",
+		};
+	}
+
+	/** Two vendors' tickets and one of the shop's own, KES 1,500 each. */
+	function vendorCart(sessionId: string): CartState {
+		const cart = ticketCart(sessionId) as unknown as {
+			items: Array<Record<string, unknown>>;
+			subtotal: { amount: number; currency: string };
+			total: { amount: number; currency: string };
+		};
+		const base = cart.items[0] as Record<string, unknown>;
+		cart.items = [
+			{ ...base, lineId: "l1", vendorId: "v1" },
+			{ ...base, lineId: "l2", vendorId: "v2" },
+			{ ...base, lineId: "l3" },
+		];
+		cart.subtotal = { amount: 450000, currency: "KES" };
+		cart.total = { amount: 450000, currency: "KES" };
+		return cart as unknown as CartState;
+	}
+
+	it("splits the payment between vendors' subaccounts and records what Paystack paid each", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...paystackSettings, "settings:connectPlatformFeePercent": 10 },
+			paystack.fetch,
+		);
+		getCol("vendors").set("v1", vendorWithPaystack("v1"));
+		getCol("vendors").set("v2", vendorWithPaystack("v2"));
+
+		const sessionId = "sess_paystack_split";
+		await ctx.kv.set(`cart:${sessionId}`, vendorCart(sessionId));
+		const initRes = await startCheckout(ctx, sessionId, { keepCart: true });
+		expect(initRes.status).toBe(200);
+		const { orderDraftId } = (await initRes.json()) as { orderDraftId: string };
+
+		// Each vendor gets KES 1,500 less the 10% platform fee; the shop keeps
+		// its own ticket, both fees, and pays Paystack's fee.
+		expect(paystack.getLastInit()?.split).toEqual({
+			type: "flat",
+			bearer_type: "account",
+			subaccounts: [
+				{ subaccount: "ACCT_v1", share: 135000 },
+				{ subaccount: "ACCT_v2", share: 135000 },
+			],
+		});
+
+		const reference = String(paystack.getLastInit()?.reference);
+		const tx = paystack.transactions.get(reference);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = JSON.parse(chargeSuccess(reference, orderDraftId, tx.id, 450000)) as {
+			data: Record<string, unknown>;
+		};
+		charge.data.split = {
+			split_code: "SPL_dynamic",
+			shares: {
+				paystack: 6750,
+				integration: 173250,
+				subaccounts: [
+					{ amount: 135000, subaccount_code: "ACCT_v1" },
+					{ amount: 135000, subaccount_code: "ACCT_v2" },
+				],
+			},
+		};
+		const payload = JSON.stringify(charge);
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.total.amount).toBe(450000);
+		expect(order.providerSplits).toMatchObject({
+			providerId: "paystack",
+			allocations: [
+				{
+					vendorId: "v1",
+					accountReference: "ACCT_v1",
+					amount: { amount: 135000, currency: "KES" },
+				},
+				{
+					vendorId: "v2",
+					accountReference: "ACCT_v2",
+					amount: { amount: 135000, currency: "KES" },
+				},
+			],
+			platformRemainder: { amount: 173250, currency: "KES" },
+			providerFee: { amount: 6750, currency: "KES" },
+		});
+	});
+});
