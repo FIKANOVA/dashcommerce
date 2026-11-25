@@ -8,12 +8,8 @@
  * `POST /cart/coupon`, `DELETE /cart/coupon/remove?code={code}`.
  */
 
-import {
-	useCallback,
-	useEffect,
-	useState,
-	type FormEvent,
-} from "react";
+import { useCallback, useEffect, useState } from "react";
+import CouponBox, { type AppliedCoupon } from "./CouponBox";
 
 interface Money {
 	currency: string;
@@ -28,12 +24,6 @@ interface CartLine {
 	unitPrice: Money;
 	lineSubtotal: Money;
 	title: string;
-}
-
-interface AppliedCoupon {
-	code: string;
-	discountAmount: Money;
-	freeShipping: boolean;
 }
 
 interface CartState {
@@ -75,8 +65,6 @@ export default function CartPageIsland({
 	const [cart, setCart] = useState<CartState | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
-	const [couponDraft, setCouponDraft] = useState("");
-	const [couponError, setCouponError] = useState<string | null>(null);
 
 	const reload = useCallback(async () => {
 		try {
@@ -151,34 +139,6 @@ export default function CartPageIsland({
 		}
 	}
 
-	async function applyCoupon(e: FormEvent) {
-		e.preventDefault();
-		const code = couponDraft.trim();
-		if (!code) return;
-		setPending(true);
-		setCouponError(null);
-		try {
-			const res = await fetch(`${API}/cart/coupon`, {
-				method: "POST",
-				credentials: "include",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ code }),
-			});
-			if (!res.ok) {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				setCouponError(body.error ?? `Coupon rejected (${res.status})`);
-				return;
-			}
-			const body = (await res.json()) as { cart: CartState };
-			setCart(body.cart);
-			setCouponDraft("");
-		} catch (err) {
-			setCouponError(err instanceof Error ? err.message : "Network error");
-		} finally {
-			setPending(false);
-		}
-	}
-
 	async function clearCart() {
 		const ok = window.confirm("Remove everything from your cart?");
 		if (!ok) return;
@@ -200,28 +160,6 @@ export default function CartPageIsland({
 			if (body.cart) setCart(body.cart);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Network error");
-		} finally {
-			setPending(false);
-		}
-	}
-
-	async function removeCoupon(code: string) {
-		setPending(true);
-		setCouponError(null);
-		try {
-			const res = await fetch(
-				`${API}/cart/coupon/remove?code=${encodeURIComponent(code)}`,
-				{ method: "DELETE", credentials: "include" },
-			);
-			if (!res.ok) {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				setCouponError(body.error ?? `Remove failed (${res.status})`);
-				return;
-			}
-			const body = (await res.json()) as { cart: CartState };
-			setCart(body.cart);
-		} catch (err) {
-			setCouponError(err instanceof Error ? err.message : "Network error");
 		} finally {
 			setPending(false);
 		}
@@ -321,49 +259,13 @@ export default function CartPageIsland({
 				</tbody>
 			</table>
 
-			<section className="dc-coupon">
-				<h3>Coupon</h3>
-				{cart.coupons.length > 0 && (
-					<ul className="dc-applied-coupons">
-						{cart.coupons.map((c) => (
-							<li key={c.code}>
-								<code>{c.code}</code>{" "}
-								{c.freeShipping
-									? "(free shipping)"
-									: `−${formatMoney(c.discountAmount, locale)}`}
-								<button
-									type="button"
-									onClick={() => removeCoupon(c.code)}
-									disabled={pending}
-									aria-label={`Remove coupon ${c.code}`}
-								>
-									Remove
-								</button>
-							</li>
-						))}
-					</ul>
-				)}
-				<form onSubmit={applyCoupon} className="dc-coupon-form">
-					<label>
-						Have a code?{" "}
-						<input
-							type="text"
-							value={couponDraft}
-							onChange={(e) => setCouponDraft(e.currentTarget.value)}
-							placeholder="SAVE10"
-							disabled={pending}
-						/>
-					</label>
-					<button type="submit" disabled={pending || !couponDraft.trim()}>
-						Apply
-					</button>
-				</form>
-				{couponError && (
-					<p role="alert" className="dc-coupon-error">
-						{couponError}
-					</p>
-				)}
-			</section>
+			<CouponBox<CartState>
+				coupons={cart.coupons}
+				onCart={setCart}
+				onPendingChange={setPending}
+				disabled={pending}
+				locale={locale}
+			/>
 
 			<section className="dc-totals">
 				<div className="dc-total-row">
@@ -438,35 +340,6 @@ export default function CartPageIsland({
 				.dc-line-total { text-align: right; font-weight: 500; }
 				.dc-remove { background: transparent; border: 0; color: var(--text-subtle, #888); cursor: pointer; font-size: 1.25em; padding: 0.25rem 0.5rem; }
 				.dc-remove:hover:not(:disabled) { color: var(--ember, #a00); }
-				.dc-coupon { padding: 1rem 0; border-top: 1px solid var(--border-mid, #e4e4e7); margin-bottom: 1.5rem; }
-				.dc-coupon h3 { margin: 0 0 0.5rem; font-size: 1em; color: var(--text, #111); }
-				.dc-applied-coupons { list-style: none; padding: 0; margin: 0 0 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-				.dc-applied-coupons li {
-					display: inline-flex; gap: 0.5rem; align-items: center;
-					padding: 0.25rem 0.5rem;
-					background: var(--success-bg, rgba(76, 175, 120, 0.12));
-					border: 1px solid var(--success, #86efac);
-					color: var(--text, #14532d);
-					border-radius: 4px; font-size: 0.9em;
-				}
-				.dc-applied-coupons button { background: transparent; border: 0; color: var(--text-mid, #555); cursor: pointer; font-size: 0.85em; text-decoration: underline; padding: 0; }
-				.dc-coupon-form { display: flex; gap: 0.5rem; align-items: end; }
-				.dc-coupon-form input {
-					padding: 6px 10px;
-					border: 1px solid var(--border-strong, #d4d4d8);
-					background: var(--surface, #fff);
-					color: var(--text, #111);
-					border-radius: 4px;
-				}
-				.dc-coupon-form button {
-					padding: 6px 12px;
-					background: var(--surface, #fff);
-					border: 1px solid var(--border-strong, #d4d4d8);
-					color: var(--text, #111);
-					border-radius: 4px; cursor: pointer;
-				}
-				.dc-coupon-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85em; color: var(--text-mid, #444); }
-				.dc-coupon-error { color: var(--ember, #a00); margin-top: 0.5rem; font-size: 0.9em; }
 				.dc-totals { border-top: 1px solid var(--border-mid, #e4e4e7); padding-top: 1rem; margin-bottom: 2rem; }
 				.dc-total-row { display: flex; justify-content: space-between; padding: 0.25rem 0; color: var(--text, #111); }
 				.dc-total-row-grand { padding-top: 0.5rem; border-top: 1px solid var(--border-mid, #e4e4e7); margin-top: 0.5rem; font-size: 1.1em; color: var(--text, #111); }
