@@ -19,7 +19,8 @@ A Paystack `PaymentProvider` for DashCommerce. Customers pay on Paystack's hoste
 | On-page checkout | With checkout set to "On your page", Paystack's Popup opens over the store's checkout using the `access_code` from initialise. `inline.js` loads only when the customer presses Pay. The Popup's success callback only sends the customer to the thank-you page; the order still comes from the signed webhook and a live verify |
 | Customer details | Paystack's page collects neither email nor address, so the provider leaves `collectsCustomerDetails` unset and DashCommerce's checkout asks for them before payment |
 | Coupons | The shop's own coupons work: core applies the discount and Paystack is charged the total after it. Paystack's own coupon field on its page isn't used |
-| Not supported | Connect splits and subscriptions. `capabilities` declares both as `false` |
+| Multi-vendor | Each vendor gets a Paystack subaccount, paid out to a bank, or to M-PESA in Kenya. Set it up on the Vendors page: choose the bank, look up the account holder's name, create the account. At checkout each vendor's exact share goes to their subaccount as a flat split, and the shop keeps the rest and pays Paystack's fee, as with Stripe Connect. `charge.success` reports what each party was paid, and core records it on the order |
+| Not supported | Subscriptions. `capabilities` declares it as `false` |
 
 ## Webhook signatures
 
