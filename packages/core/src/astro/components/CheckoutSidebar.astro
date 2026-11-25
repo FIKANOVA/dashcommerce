@@ -5,8 +5,14 @@ import CheckoutSidebarIsland from "../islands/CheckoutSidebarIsland.tsx";
 
 interface Props {
 	locale?: string;
+	/**
+	 * List the shipping options to choose from (default). Pass `false` when
+	 * the checkout form has its own shipping step, such as HostedCheckoutForm;
+	 * the summary then shows the chosen option in its totals.
+	 */
+	shippingPicker?: boolean;
 }
 
-const { locale } = Astro.props;
+const { locale, shippingPicker = true } = Astro.props;
 ---
-<CheckoutSidebarIsland client:load locale={locale} />
+<CheckoutSidebarIsland client:load locale={locale} shippingPicker={shippingPicker} />

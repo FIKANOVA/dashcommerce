@@ -238,7 +238,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
 
     <!-- Sidebar -->
     <aside class="co-sidebar">
-      <CheckoutSidebar />
+      <CheckoutSidebar shippingPicker={useStripeElements} />
     </aside>
 
   </div>

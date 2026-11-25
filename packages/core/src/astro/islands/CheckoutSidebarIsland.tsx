@@ -3,6 +3,10 @@
  * available shipping methods (once an address is on the cart), lets
  * the user pick a method, and renders running totals.
  *
+ * With `shippingPicker={false}` the summary leaves choosing to the
+ * checkout form's own shipping step and shows the chosen option in the
+ * totals instead, so the options aren't listed twice.
+ *
  * Listens for `dashcommerce:cart-updated` and refetches on every
  * update so the totals stay in sync with payment-form state changes
  * the host page may trigger.
@@ -54,10 +58,16 @@ function formatMoney(m: Money | null | undefined, locale = "en-US") {
 
 export interface CheckoutSidebarIslandProps {
 	locale?: string;
+	/**
+	 * List the shipping options to choose from (default). Turn off when the
+	 * checkout form has its own shipping step, such as `HostedCheckoutForm`.
+	 */
+	shippingPicker?: boolean;
 }
 
 export default function CheckoutSidebarIsland({
 	locale = "en-US",
+	shippingPicker = true,
 }: CheckoutSidebarIslandProps) {
 	const [cart, setCart] = useState<CartState | null>(null);
 	const [methods, setMethods] = useState<ShippingRateOption[]>([]);
@@ -74,7 +84,7 @@ export default function CheckoutSidebarIsland({
 			const body = (await res.json()) as { cart: CartState };
 			setCart(body.cart);
 			setError(null);
-			if (body.cart.shippingAddress) {
+			if (shippingPicker && body.cart.shippingAddress) {
 				const mRes = await fetch(`${API}/cart/shipping-methods`, {
 					credentials: "include",
 				});
@@ -86,7 +96,7 @@ export default function CheckoutSidebarIsland({
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Network error");
 		}
-	}, []);
+	}, [shippingPicker]);
 
 	useEffect(() => {
 		reload();
@@ -153,7 +163,7 @@ export default function CheckoutSidebarIsland({
 				))}
 			</ul>
 
-			{Boolean(cart.shippingAddress) && methods.length > 0 && (
+			{shippingPicker && Boolean(cart.shippingAddress) && methods.length > 0 && (
 				<section className="dc-sidebar-shipping">
 					<h4>Shipping</h4>
 					<ul>
@@ -189,11 +199,20 @@ export default function CheckoutSidebarIsland({
 						<span>−{formatMoney(cart.discountTotal, locale)}</span>
 					</div>
 				)}
-				{cart.shippingTotal.amount > 0 && (
+				{!shippingPicker && cart.shippingMethod ? (
 					<div className="dc-row">
-						<span>Shipping</span>
-						<span>{formatMoney(cart.shippingTotal, locale)}</span>
+						<span>Shipping · {cart.shippingMethod.label}</span>
+						<span>
+							{cart.shippingTotal.amount > 0 ? formatMoney(cart.shippingTotal, locale) : "Free"}
+						</span>
 					</div>
+				) : (
+					cart.shippingTotal.amount > 0 && (
+						<div className="dc-row">
+							<span>Shipping</span>
+							<span>{formatMoney(cart.shippingTotal, locale)}</span>
+						</div>
+					)
 				)}
 				{cart.taxTotal.amount > 0 && (
 					<div className="dc-row">
