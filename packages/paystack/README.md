@@ -18,7 +18,8 @@ A Paystack `PaymentProvider` for DashCommerce. Customers pay on Paystack's hoste
 | Currencies | KES, NGN, GHS, ZAR and USD. Your Paystack account must be enabled for the currency you sell in |
 | On-page checkout | With checkout set to "On your page", Paystack's Popup opens over the store's checkout using the `access_code` from initialise. `inline.js` loads only when the customer presses Pay. The Popup's success callback only sends the customer to the thank-you page; the order still comes from the signed webhook and a live verify |
 | Customer details | Paystack's page collects neither email nor address, so the provider leaves `collectsCustomerDetails` unset and DashCommerce's checkout asks for them before payment |
-| Not supported | Coupons on Paystack's page, Connect splits and subscriptions. `capabilities` declares all three as `false` |
+| Coupons | The shop's own coupons work: core applies the discount and Paystack is charged the total after it. Paystack's own coupon field on its page isn't used |
+| Not supported | Connect splits and subscriptions. `capabilities` declares both as `false` |
 
 ## Webhook signatures
 
