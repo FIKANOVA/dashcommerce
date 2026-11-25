@@ -5,6 +5,8 @@ import Shop from "../../layouts/Shop.astro";
 import ProductDetails, { type ProductDetailsProduct } from "@dashcommerce/core/astro/components/ProductDetails.astro";
 import SandboxedProductInfo from "../../components/SandboxedProductInfo.astro";
 import { SANDBOXED } from "../../lib/edition";
+import { formatPrice } from "../../lib/price";
+import { storefrontCurrency } from "@dashcommerce/core/astro";
 
 export const prerender = false;
 
@@ -72,18 +74,17 @@ const firstCurrency = Object.keys(priceMap)[0];
 const firstPrice    = firstCurrency ? priceMap[firstCurrency] : undefined;
 const canonical     = `${Astro.url.origin}/shop/${d.slug ?? record.id}`;
 
+const currency = storefrontCurrency(Astro.cookies);
+
 const relatedCards = related.map((p) => {
   const pm = p.data.prices as PriceMap;
-  const priceEntry = firstCurrency ? pm?.[firstCurrency] : undefined;
   const img = p.data.featured_image ?? p.data.gallery_2 ?? null;
   return {
     href:  `/shop/${p.data.slug ?? p.id}`,
     title: String(p.data.title ?? ""),
     grad:  getGrad(String(p.data.type)),
     image: img ?? null,
-    price: priceEntry && firstCurrency
-      ? new Intl.NumberFormat("en-US", { style: "currency", currency: firstCurrency }).format(priceEntry.amount / 100)
-      : null,
+    price: formatPrice(pm, currency),
   };
 });
 
@@ -219,7 +220,7 @@ const metaDescription = descStr.length > 0
       {SANDBOXED ? (
         <SandboxedProductInfo id={productDbId} data={d as unknown as Record<string, unknown>} />
       ) : (
-        <ProductDetails product={record as unknown as ProductDetailsProduct} />
+        <ProductDetails product={record as unknown as ProductDetailsProduct} currency={currency} />
       )}
     </div>
   </div>

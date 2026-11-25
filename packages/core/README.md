@@ -11,7 +11,7 @@ The e-commerce plugin for [EmDash CMS](https://github.com/emdash-cms/emdash).
 | `.` | Vite / build time | Descriptor factory (`dashcommerce()`) — imported in `astro.config.mjs`. Side-effect-free. |
 | `./sandbox` | Runtime server | `definePlugin({ hooks, routes })` loaded by the emdash runtime. Sandbox-safe. |
 | `./admin` | Browser | React admin pages + dashboard widgets + field widgets. |
-| `./astro` | Host SSR | `blockComponents` registry for Portable Text block renderers. |
+| `./astro` | Host SSR | `blockComponents` registry for Portable Text block renderers, and `storefrontCurrency(Astro.cookies)`: the cart's currency (from the `dashcommerce_currency` cookie that cart responses set), to pass as `currency` to `<ProductDetails>`, `<ProductCard>` and `<ProductGrid>`. Pages that use it vary by that cookie, so a page cache must too. |
 | `./astro/components/*` | Host SSR | Storefront Astro components (`<ProductCard>`, `<CartSummary>`, etc.). |
 | `./astro/islands/*` | Host SSR + client | React islands (`CartDrawerIsland`, `CheckoutIsland`, etc.). |
 
