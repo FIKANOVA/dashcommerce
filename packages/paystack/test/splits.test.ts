@@ -162,11 +162,21 @@ describe("split settlement from charge.success", () => {
 });
 
 describe("vendor payout onboarding", () => {
-	it("lists Kenyan banks and M-PESA together, once each, following Paystack's pages", async () => {
+	const balanceIn = (...currencies: string[]) =>
+		paystackOk(currencies.map((currency) => ({ currency, balance: 0 })));
+
+	it("lists a Kenyan shop's banks and mobile money together, once each, following Paystack's pages", async () => {
 		const { ctx, calls } = recorder((url) => {
-			const type = url.searchParams.get("type");
-			if (type === "mobile_money") {
-				return paystackOk([{ code: "MPESA", name: "M-PESA", active: true }], { next: null });
+			if (url.pathname === "/balance") return balanceIn("KES", "USD");
+			if (url.searchParams.get("type") === "mobile_money") {
+				expect(url.searchParams.get("currency")).toBe("KES");
+				return paystackOk(
+					[
+						{ code: "MPESA", name: "M-PESA", active: true },
+						{ code: "ATL_KE", name: "Airtel Kenya", active: true },
+					],
+					{ next: null },
+				);
 			}
 			if (!url.searchParams.get("next")) {
 				return paystackOk(
@@ -190,23 +200,54 @@ describe("vendor payout onboarding", () => {
 			{ code: "03", name: "Absa Bank Kenya Plc" },
 			{ code: "68", name: "Equity Bank Kenya Limited" },
 			{ code: "MPESA", name: "M-PESA" },
+			{ code: "ATL_KE", name: "Airtel Kenya" },
 		]);
 		expect(
-			calls.map((c) => c.url.searchParams.get("country") ?? c.url.searchParams.get("type")),
-		).toEqual(["kenya", "kenya", "mobile_money"]);
+			calls.map((c) =>
+				c.url.pathname === "/balance"
+					? "balance"
+					: (c.url.searchParams.get("country") ?? c.url.searchParams.get("type")),
+			),
+		).toEqual(["balance", "kenya", "kenya", "mobile_money"]);
 	});
 
-	it("lists only banks outside Kenya, and refuses a country Paystack doesn't pay out in", async () => {
-		const { ctx, calls } = recorder(() =>
-			paystackOk([{ code: "058", name: "GTBank", active: true }], { next: null }),
+	it("asks for mobile money in the shop's own currency, so a Ghanaian shop gets MTN and the rest", async () => {
+		const { ctx } = recorder((url) => {
+			if (url.pathname === "/balance") return balanceIn("GHS");
+			if (url.searchParams.get("type") === "mobile_money") {
+				expect(url.searchParams.get("currency")).toBe("GHS");
+				return paystackOk([{ code: "MTN", name: "MTN", active: true }], { next: null });
+			}
+			return paystackOk([{ code: "GCB", name: "GCB Bank", active: true }], { next: null });
+		});
+		expect(await paystackPaymentProvider.listPayoutBanks?.(ctx, "GH", credentials)).toEqual([
+			{ code: "GCB", name: "GCB Bank" },
+			{ code: "MTN", name: "MTN" },
+		]);
+	});
+
+	it("refuses a vendor country outside the shop's Paystack country, before listing banks", async () => {
+		const { ctx, calls } = recorder((url) =>
+			url.pathname === "/balance" ? balanceIn("KES", "USD") : paystackOk([], { next: null }),
+		);
+		await expect(paystackPaymentProvider.listPayoutBanks?.(ctx, "NG", credentials)).rejects.toThrow(
+			"This Paystack account pays vendors in Kenya only. Choose KE as the vendor's country.",
+		);
+		expect(calls.map((c) => c.url.pathname)).toEqual(["/balance"]);
+		await expect(paystackPaymentProvider.listPayoutBanks?.(ctx, "UG", credentials)).rejects.toThrow(
+			/GH, KE, NG, ZA only/,
+		);
+	});
+
+	it("doesn't restrict when the key can't read the balance; Paystack still checks the country itself", async () => {
+		const { ctx } = recorder((url) =>
+			url.pathname === "/balance"
+				? new Response(JSON.stringify({ status: false, message: "Forbidden" }), { status: 403 })
+				: paystackOk([{ code: "058", name: "GTBank", active: true }], { next: null }),
 		);
 		expect(await paystackPaymentProvider.listPayoutBanks?.(ctx, "NG", credentials)).toEqual([
 			{ code: "058", name: "GTBank" },
 		]);
-		expect(calls).toHaveLength(1);
-		await expect(paystackPaymentProvider.listPayoutBanks?.(ctx, "UG", credentials)).rejects.toThrow(
-			/GH, KE, NG, ZA only/,
-		);
 	});
 
 	it("looks up the account holder's name", async () => {
@@ -223,12 +264,14 @@ describe("vendor payout onboarding", () => {
 	});
 
 	it("creates a subaccount and returns only a masked account number", async () => {
-		const { ctx, calls } = recorder(() =>
-			paystackOk({
-				subaccount_code: "ACCT_vendorone",
-				account_name: "VENDOR ONE LTD",
-				settlement_bank: "Absa Bank Kenya Plc",
-			}),
+		const { ctx, calls } = recorder((url) =>
+			url.pathname === "/balance"
+				? balanceIn("KES")
+				: paystackOk({
+						subaccount_code: "ACCT_vendorone",
+						account_name: "VENDOR ONE LTD",
+						settlement_bank: "Absa Bank Kenya Plc",
+					}),
 		);
 		const created = await paystackPaymentProvider.createPayoutAccount?.(
 			ctx,
@@ -244,8 +287,8 @@ describe("vendor payout onboarding", () => {
 			},
 			credentials,
 		);
-		expect(calls[0]?.url.pathname).toBe("/subaccount");
-		expect(calls[0]?.body).toEqual({
+		expect(calls.map((c) => c.url.pathname)).toEqual(["/balance", "/subaccount"]);
+		expect(calls[1]?.body).toEqual({
 			business_name: "Vendor One",
 			settlement_bank: "03",
 			account_number: "0123456789",
@@ -261,6 +304,27 @@ describe("vendor payout onboarding", () => {
 			country: "KE",
 			maskedAccountNumber: "****6789",
 		});
+	});
+
+	it("refuses a subaccount in another country before calling Paystack to create it", async () => {
+		const { ctx, calls } = recorder((url) =>
+			url.pathname === "/balance" ? balanceIn("KES") : paystackOk({}),
+		);
+		await expect(
+			paystackPaymentProvider.createPayoutAccount?.(
+				ctx,
+				{
+					accountNumber: "0123456789",
+					bankCode: "058",
+					country: "NG",
+					businessName: "Vendor Two",
+					businessEmail: "two@example.com",
+					businessMobile: "+2348000000000",
+				},
+				credentials,
+			),
+		).rejects.toThrow(/pays vendors in Kenya only/);
+		expect(calls.map((c) => c.url.pathname)).toEqual(["/balance"]);
 	});
 
 	it("refuses a flat default split, since Paystack subaccounts take a percentage", async () => {

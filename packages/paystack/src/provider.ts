@@ -473,6 +473,63 @@ const PAYSTACK_COUNTRY: Record<string, string> = {
 	ZA: "south africa",
 };
 
+/** Each payout country's own currency, for the mobile-money list. */
+const COUNTRY_CURRENCY: Record<string, string> = { GH: "GHS", KE: "KES", NG: "NGN", ZA: "ZAR" };
+
+/** The country a Paystack account is in, from its balance currencies. */
+const CURRENCY_COUNTRY: Record<string, string> = { GHS: "GH", KES: "KE", NGN: "NG", ZAR: "ZA" };
+
+/**
+ * Countries this Paystack account can pay vendors in. Subaccounts must be in
+ * the account's own country, so a Kenyan shop pays Kenyan banks and mobile
+ * money only. Worked out from the account's balance currencies (USD is
+ * ignored; Kenyan and Nigerian accounts can hold it too). Returns `null`
+ * when the key may not read the balance (a restricted key, say), and the
+ * caller then doesn't restrict: Paystack still refuses a wrong-country
+ * subaccount itself.
+ */
+async function accountPayoutCountries(
+	ctx: PaymentProviderRuntimeContext,
+	credentials: PaymentProviderCredentials,
+): Promise<string[] | null> {
+	try {
+		const balances = await call<Array<{ currency?: string }>>(ctx, {
+			client: toPaystackClient(credentials),
+			method: "GET",
+			path: "/balance",
+		});
+		const countries = new Set<string>();
+		for (const row of Array.isArray(balances) ? balances : []) {
+			const country = CURRENCY_COUNTRY[row?.currency?.toUpperCase() ?? ""];
+			if (country) countries.add(country);
+		}
+		return countries.size > 0 ? Array.from(countries) : null;
+	} catch {
+		return null;
+	}
+}
+
+const COUNTRY_NAME: Record<string, string> = {
+	GH: "Ghana",
+	KE: "Kenya",
+	NG: "Nigeria",
+	ZA: "South Africa",
+};
+
+async function assertPayoutCountry(
+	ctx: PaymentProviderRuntimeContext,
+	iso: string,
+	credentials: PaymentProviderCredentials,
+): Promise<void> {
+	const allowed = await accountPayoutCountries(ctx, credentials);
+	if (allowed && !allowed.includes(iso)) {
+		const names = allowed.map((c) => COUNTRY_NAME[c] ?? c).join(", ");
+		throw new Error(
+			`This Paystack account pays vendors in ${names} only. Choose ${allowed.join(" or ")} as the vendor's country.`,
+		);
+	}
+}
+
 function lastFour(accountNumber: string): string {
 	return `****${accountNumber.slice(-4)}`;
 }
@@ -818,8 +875,9 @@ export const paystackPaymentProvider: PaymentProvider = {
 	},
 
 	/**
-	 * Banks a vendor can be paid out to. In Kenya this includes M-PESA,
-	 * which Paystack lists as `type=mobile_money`.
+	 * Banks and mobile money a vendor can be paid out to, in the account's own
+	 * country only. Mobile money is whatever Paystack lists for that country:
+	 * M-PESA, Airtel and Telkom in Kenya; MTN, AirtelTigo and Vodafone in Ghana.
 	 */
 	async listPayoutBanks(
 		ctx: PaymentProviderRuntimeContext,
@@ -833,9 +891,12 @@ export const paystackPaymentProvider: PaymentProvider = {
 				`Paystack pays out to banks in ${Object.keys(PAYSTACK_COUNTRY).join(", ")} only`,
 			);
 		}
+		await assertPayoutCountry(ctx, iso, credentials);
 		const client = toPaystackClient(credentials);
-		const lists = [`country=${encodeURIComponent(paystackCountry)}`];
-		if (iso === "KE") lists.push("currency=KES&type=mobile_money");
+		const lists = [
+			`country=${encodeURIComponent(paystackCountry)}`,
+			`currency=${COUNTRY_CURRENCY[iso]}&type=mobile_money`,
+		];
 		const banks = new Map<string, PaymentProviderBank>();
 		for (const filter of lists) {
 			let next: string | null = null;
@@ -910,6 +971,8 @@ export const paystackPaymentProvider: PaymentProvider = {
 		if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) {
 			throw new Error("The percentage split is a decimal from 0 to 1");
 		}
+		const country = input.country?.trim().toUpperCase();
+		if (country) await assertPayoutCountry(ctx, country, credentials);
 
 		const data = await call<{
 			subaccount_code?: string;
