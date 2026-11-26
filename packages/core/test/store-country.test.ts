@@ -47,6 +47,13 @@ describe("storeCountry setting", () => {
 		expect((await ctx.kv.get("settings:storeCountry")) ?? null).toBeNull();
 	});
 
+	it("can be cleared again", async () => {
+		const { ctx } = makeRouteContext({ "settings:storeCountry": "KE" });
+		const cleared = await settings(ctx, "POST", { storeCountry: null });
+		expect(cleared.status).toBe(200);
+		expect((await settings(ctx, "GET")).body.storeCountry).toBeNull();
+	});
+
 	it("is unset on a new shop", async () => {
 		const { ctx } = makeRouteContext({});
 		expect((await settings(ctx, "GET")).body.storeCountry).toBeNull();

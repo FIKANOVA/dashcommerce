@@ -131,6 +131,8 @@ export function validateSettingsKey(
 		}
 		case "storeCountry": {
 			// Where the shop is based: checkout starts on this country.
+			// Optional; null clears it.
+			if (value === null) return ok(null);
 			if (typeof value !== "string") return bad("storeCountry must be a string");
 			const code = value.trim().toUpperCase();
 			if (!isValidCountryCode(code)) {
