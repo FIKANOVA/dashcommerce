@@ -439,10 +439,16 @@ const payHint = onPage
     const choice = regionChoices[country];
     regionField.hidden = !choice;
     regionSelect.required = Boolean(choice);
-    if (regionSelect.dataset.country === country) return;
-    regionSelect.dataset.country = country;
+    // Rebuild only when the country's options change. A country with no
+    // options yet (the regions list may still be loading) is not remembered,
+    // so the options are built once the list arrives.
+    if (choice && regionSelect.dataset.country === country) return;
     regionSelect.replaceChildren();
-    if (!choice) return;
+    if (!choice) {
+      delete regionSelect.dataset.country;
+      return;
+    }
+    regionSelect.dataset.country = country;
     if (regionLabel) regionLabel.textContent = choice.label;
     const prompt = new Option(`Choose your ${choice.label.toLowerCase()}`, "", true, true);
     prompt.disabled = true;
