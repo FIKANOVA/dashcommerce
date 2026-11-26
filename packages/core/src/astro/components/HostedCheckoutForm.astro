@@ -3,7 +3,8 @@
  * Hosted checkout form — redirects to Stripe Checkout.
  *
  * Flow, server-side of Stripe:
- *   1. Customer picks ship-to country (+ postal code, if they have one).
+ *   1. Customer picks ship-to country (+ postal code, if they have one,
+ *      and the region, when a shipping zone names regions in that country).
  *   2. Storefront fetches `cart/shipping-methods` and shows radio options.
  *   3. Customer picks a method; storefront calls `cart/shipping-method`.
  *   4. Customer clicks "Pay with Stripe" → `checkout/create-session`
@@ -84,6 +85,10 @@ const payHint = onPage
             <input id="hc-postal" autocomplete="shipping postal-code" />
           </label>
         </div>
+        <label class="hc-label" id="hc-region-field" hidden>
+          <span id="hc-region-label">Region</span>
+          <select id="hc-region" autocomplete="shipping address-level1"></select>
+        </label>
         <p id="hc-location-error" class="hc-error" role="alert"></p>
         <button id="hc-location-submit" type="submit" class="btn-secondary hc-submit">
           Get shipping options →
@@ -205,15 +210,18 @@ const payHint = onPage
     display: flex; flex-direction: column; gap: .4rem;
     font-size: .82rem; font-weight: 500; color: var(--text-muted);
   }
+  .hc-label[hidden] { display: none; }
   .hc-label small { font-weight: 400; opacity: .7; }
-  .hc-label input {
+  .hc-label input,
+  .hc-label select {
     padding: .7rem .9rem;
     background: var(--bg-3); color: var(--text);
     border: 1px solid var(--border-mid); border-radius: var(--radius);
     font-family: var(--font-sans); font-size: .9rem;
     transition: border-color .2s, box-shadow .2s;
   }
-  .hc-label input:focus {
+  .hc-label input:focus,
+  .hc-label select:focus {
     outline: none;
     border-color: var(--gold);
     box-shadow: 0 0 0 3px var(--gold-dim);
@@ -329,7 +337,7 @@ const payHint = onPage
       lastName: fieldValue("hc-last"),
       line1: digitalOnly ? "" : fieldValue("hc-line1"),
       city: digitalOnly ? "" : fieldValue("hc-city"),
-      region: "",
+      region: digitalOnly ? "" : (chosenRegion() ?? ""),
       postalCode: digitalOnly ? "" : fieldValue("hc-postal"),
       country,
       ...(fieldValue("hc-phone") ? { phone: fieldValue("hc-phone") } : {}),
@@ -413,8 +421,60 @@ const payHint = onPage
 
   // --- 1. Ship-to location form -------------------------------------------
   //
-  // Sends a minimal `{country, postalCode}` to `cart/shipping-location`;
-  // the postcode may be empty.
+  // When a shipping zone names regions in the chosen country (Nairobi City
+  // in Kenya, say), ask which one, with "Elsewhere" for the rest of the
+  // country. `cart/shipping-regions` lists them; shops without regional
+  // zones list none, and the region field stays hidden.
+  type RegionChoices = Record<string, { label: string; regions: Array<{ code: string; name: string }> }>;
+  const ELSEWHERE = "elsewhere";
+  const countryInput = document.getElementById("hc-country") as HTMLInputElement | null;
+  const regionField = document.getElementById("hc-region-field");
+  const regionLabel = document.getElementById("hc-region-label");
+  const regionSelect = document.getElementById("hc-region") as HTMLSelectElement | null;
+  let regionChoices: RegionChoices = {};
+
+  function showRegions() {
+    if (!regionField || !regionSelect) return;
+    const country = countryInput?.value.trim().toUpperCase() ?? "";
+    const choice = regionChoices[country];
+    regionField.hidden = !choice;
+    regionSelect.required = Boolean(choice);
+    if (regionSelect.dataset.country === country) return;
+    regionSelect.dataset.country = country;
+    regionSelect.replaceChildren();
+    if (!choice) return;
+    if (regionLabel) regionLabel.textContent = choice.label;
+    const prompt = new Option(`Choose your ${choice.label.toLowerCase()}`, "", true, true);
+    prompt.disabled = true;
+    regionSelect.add(prompt);
+    for (const r of choice.regions) regionSelect.add(new Option(r.name, r.code));
+    regionSelect.add(new Option("Elsewhere", ELSEWHERE));
+  }
+
+  /** The chosen region code, "" for elsewhere, or undefined when not asked. */
+  function chosenRegion(): string | undefined {
+    if (!regionSelect || !regionField || regionField.hidden) return undefined;
+    return regionSelect.value === ELSEWHERE ? "" : regionSelect.value;
+  }
+
+  if (!digitalOnly && locForm) {
+    countryInput?.addEventListener("input", showRegions);
+    (async () => {
+      try {
+        const res = await fetch(`${API}/cart/shipping-regions`, { credentials: "include" });
+        if (!res.ok) return;
+        const body = (await res.json()) as { countries?: RegionChoices };
+        regionChoices = body.countries ?? {};
+        showRegions();
+      } catch {
+        /* network error → no region field; rates match on the country */
+      }
+    })();
+  }
+
+  // Sends a minimal `{country, region?, postalCode}` to
+  // `cart/shipping-location`; the postcode may be empty, and the region is
+  // sent only when asked for.
   // That writes a placeholder shipping address on the server cart so
   // that `cart/shipping-methods` can compute rates. Stripe will collect
   // the full address (line1, city, region) after we redirect.
@@ -426,13 +486,14 @@ const payHint = onPage
 
       const country = (document.getElementById("hc-country") as HTMLInputElement).value.trim().toUpperCase();
       const postalCode = (document.getElementById("hc-postal") as HTMLInputElement).value.trim();
+      const region = chosenRegion();
 
       try {
         const locRes = await fetch(`${API}/cart/shipping-location`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ country, postalCode }),
+          body: JSON.stringify({ country, postalCode, ...(region === undefined ? {} : { region }) }),
         });
         if (!locRes.ok) {
           throw new Error(await errorMessage(locRes, "Couldn't save your location. Please try again."));

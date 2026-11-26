@@ -120,7 +120,8 @@ DELETE /cart/clear                        Empty cart (keeps session)
 POST   /cart/currency                     Switch currency (empty cart only)
 POST   /cart/coupon                       Apply coupon
 DELETE /cart/coupon/remove?code={code}    Remove coupon
-POST   /cart/shipping-location            Set country + postal (hosted checkout pre-flight)
+POST   /cart/shipping-location            Set country + region + postal (hosted checkout pre-flight)
+GET    /cart/shipping-regions             Regions the shipping zones name, by country
 POST   /cart/shipping-address             Full address (embedded checkout)
 POST   /cart/contact                      Email + billing address
 POST   /cart/shipping-methods             List rates for current ship-to
