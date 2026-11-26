@@ -56,10 +56,19 @@ function formatMoney(m: Money | null | undefined, locale = "en-US") {
 
 export interface CheckoutSidebarIslandProps {
 	locale?: string;
+	/**
+	 * Show the coupon box (default). Turn off when the payment is set up
+	 * before the customer presses Pay, as with Stripe Elements: a code
+	 * applied after that would show in the summary but not be charged.
+	 * Hosted and on-page checkouts (HostedCheckoutForm) fix the amount on
+	 * Pay, so they keep the box.
+	 */
+	couponEntry?: boolean;
 }
 
 export default function CheckoutSidebarIsland({
 	locale = "en-US",
+	couponEntry = true,
 }: CheckoutSidebarIslandProps) {
 	const [cart, setCart] = useState<CartState | null>(null);
 	const [methods, setMethods] = useState<ShippingRateOption[]>([]);
@@ -180,14 +189,16 @@ export default function CheckoutSidebarIsland({
 				</section>
 			)}
 
-			<CouponBox<CartState>
-				coupons={cart.coupons}
-				onCart={setCart}
-				onPendingChange={setPending}
-				disabled={pending}
-				headingLevel={4}
-				locale={locale}
-			/>
+			{couponEntry && (
+				<CouponBox<CartState>
+					coupons={cart.coupons}
+					onCart={setCart}
+					onPendingChange={setPending}
+					disabled={pending}
+					headingLevel={4}
+					locale={locale}
+				/>
+			)}
 
 			<section className="dc-sidebar-totals">
 				<div className="dc-row">
