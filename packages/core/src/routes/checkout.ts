@@ -409,7 +409,7 @@ export const checkoutRoutes = {
 	 * Pre-conditions the storefront already satisfied before calling:
 	 *   • Cart has at least one item.
 	 *   • Cart has a `shippingAddress` — even a partial one is fine; we
-	 *     only need country + postalCode to have picked a zone. Stripe
+	 *     only need the country to have picked a zone. Stripe
 	 *     collects the full address on its page and the webhook merges
 	 *     it back in via `session.shipping_details`.
 	 *   • Cart has a `shippingMethod` (set via `cart/shipping-method`).
@@ -482,10 +482,10 @@ export const checkoutRoutes = {
 			// without either — Stripe collects only billing in that case.
 			const hasPhysical = cart.items.some((l) => !l.isDigital);
 			if (hasPhysical) {
-				if (!cart.shippingAddress?.country || !cart.shippingAddress?.postalCode) {
+				if (!cart.shippingAddress?.country) {
 					return new Response(
 						JSON.stringify({
-							error: "Pick a ship-to country and postal code before paying.",
+							error: "Pick a ship-to country before paying.",
 						}),
 						{ status: 409, headers: { "Content-Type": "application/json" } },
 					);

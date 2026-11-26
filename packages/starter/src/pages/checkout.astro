@@ -153,8 +153,8 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
                 <input required id="region" placeholder="CA" autocomplete="shipping address-level1" />
               </label>
               <label class="co-label">
-                <span>Postal code</span>
-                <input required id="postalCode" autocomplete="shipping postal-code" />
+                <span>Postal code <small>(optional)</small></span>
+                <input id="postalCode" autocomplete="shipping postal-code" />
               </label>
             </div>
             <label class="co-label">
@@ -195,7 +195,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
                 <input id="bRegion" placeholder="CA" autocomplete="billing address-level1" />
               </label>
               <label class="co-label">
-                <span>Postal code</span>
+                <span>Postal code <small>(optional)</small></span>
                 <input id="bPostalCode" autocomplete="billing postal-code" />
               </label>
             </div>
@@ -470,7 +470,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
     if (!sameAsShipping || !billingFieldset) return;
     const different = !sameAsShipping.checked;
     billingFieldset.hidden = !different;
-    const required = ["bFirstName", "bLastName", "bLine1", "bCity", "bRegion", "bPostalCode", "bCountry"];
+    const required = ["bFirstName", "bLastName", "bLine1", "bCity", "bRegion", "bCountry"];
     for (const id of required) {
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el) el.required = different;

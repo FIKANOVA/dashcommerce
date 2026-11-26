@@ -7,7 +7,7 @@
  *   DELETE /cart/item?lineId={id}        — remove
  *   POST   /cart/coupon                  — apply { code }
  *   DELETE /cart/coupon/remove?code={code} — remove
- *   POST   /cart/shipping-location       — minimal ship-to {country, postalCode} (hosted checkout)
+ *   POST   /cart/shipping-location       — minimal ship-to {country, postalCode?} (hosted checkout)
  *   POST   /cart/shipping-address        — full address → recalc tax (embedded checkout)
  *   POST   /cart/shipping-methods        — list available rates for current ship-to
  *   POST   /cart/shipping-method         — set method id
@@ -590,11 +590,15 @@ export const cartRoutes = {
 	/**
 	 * Lightweight "where does this ship to?" endpoint used by the
 	 * hosted-checkout pre-flight form. Accepts just `{country,
-	 * postalCode}`, writes a placeholder `shippingAddress` on the cart
+	 * postalCode?}`, writes a placeholder `shippingAddress` on the cart
 	 * so that zone-picking + rate calc can run before we redirect the
 	 * customer to Stripe's page. The remaining address fields
 	 * (name/line1/city/region) will be populated post-redirect from
 	 * `checkout.session.completed`.
+	 *
+	 * The postcode is optional: shipping zones match on country and
+	 * region only, and many addresses have no postcode. It is kept when
+	 * given, for tax rates that match on postcode prefixes.
 	 *
 	 * Contrast with `cart/contact`, which requires the full address
 	 * because the embedded-Elements flow has nowhere else to collect
@@ -608,12 +612,9 @@ export const cartRoutes = {
 				postalCode?: string;
 			};
 			const country = body.country?.trim().toUpperCase();
-			const postalCode = body.postalCode?.trim();
+			const postalCode = body.postalCode?.trim() ?? "";
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
-			}
-			if (!postalCode) {
-				return errorResponse("postalCode required", 400);
 			}
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
