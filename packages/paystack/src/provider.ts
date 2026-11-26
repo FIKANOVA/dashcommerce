@@ -979,6 +979,8 @@ export const paystackPaymentProvider: PaymentProvider = {
 			account_name?: string;
 			settlement_bank?: string;
 			account_number?: string;
+			/** Paystack creates subaccounts unverified, then verifies them later. */
+			is_verified?: boolean;
 		}>(ctx, {
 			client: toPaystackClient(credentials),
 			path: "/subaccount",
@@ -1005,6 +1007,8 @@ export const paystackPaymentProvider: PaymentProvider = {
 			bankCode,
 			...(input.country ? { country: input.country.trim().toUpperCase() } : {}),
 			maskedAccountNumber: lastFour(accountNumber),
+			// Usable at once; core shows "unverified" until Paystack verifies it.
+			...(typeof data.is_verified === "boolean" ? { verified: data.is_verified } : {}),
 		};
 	},
 

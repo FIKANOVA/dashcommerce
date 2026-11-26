@@ -306,6 +306,30 @@ describe("vendor payout onboarding", () => {
 		});
 	});
 
+	it("reports a subaccount Paystack hasn't verified yet as unverified", async () => {
+		const create = async (isVerified: boolean) => {
+			const { ctx } = recorder((url) =>
+				url.pathname === "/balance"
+					? balanceIn("KES")
+					: paystackOk({ subaccount_code: "ACCT_vendorone", is_verified: isVerified }),
+			);
+			return paystackPaymentProvider.createPayoutAccount?.(
+				ctx,
+				{
+					accountNumber: "0712345678",
+					bankCode: "MPESA",
+					country: "KE",
+					businessName: "Vendor One",
+					splitType: "percentage",
+					splitValue: 0.1,
+				},
+				credentials,
+			);
+		};
+		expect((await create(false))?.verified).toBe(false);
+		expect((await create(true))?.verified).toBe(true);
+	});
+
 	it("refuses a subaccount in another country before calling Paystack to create it", async () => {
 		const { ctx, calls } = recorder((url) =>
 			url.pathname === "/balance" ? balanceIn("KES") : paystackOk({}),
