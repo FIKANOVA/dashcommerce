@@ -15,7 +15,7 @@ import {
 	resetPaymentProviders,
 } from "../src/payment-provider";
 import { adminApiRoutes } from "../src/routes/admin-api";
-import { makeRouteContext } from "./helpers/route-harness";
+import { ADMIN_USER, makeRouteContext } from "./helpers/route-harness";
 
 afterEach(() => resetPaymentProviders());
 
@@ -31,6 +31,7 @@ async function check(ctx: PluginContext, input: Record<string, unknown>) {
 	const routeCtx = {
 		request: new Request("http://test/admin/payments/check-connection", { method: "POST" }),
 		input,
+		user: ADMIN_USER,
 	} as unknown as RouteContext;
 	const res = (await adminApiRoutes["admin/payments/check-connection"].handler(
 		routeCtx,
@@ -42,6 +43,7 @@ async function check(ctx: PluginContext, input: Record<string, unknown>) {
 async function providerRows(ctx: PluginContext) {
 	const routeCtx = {
 		request: new Request("http://test/admin/settings", { method: "GET" }),
+		user: ADMIN_USER,
 	} as unknown as RouteContext;
 	const res = (await adminApiRoutes["admin/settings"].handler(routeCtx, ctx)) as Response;
 	const body = (await res.json()) as { _providers: Array<Record<string, unknown>> };

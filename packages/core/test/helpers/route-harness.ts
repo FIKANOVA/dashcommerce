@@ -194,3 +194,16 @@ export async function deliverWebhook(
 		return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
 	}
 }
+
+/**
+ * Signed-in callers as EmDash passes them to private plugin routes
+ * (`ctx.user`). Roles are EmDash's numeric levels: EDITOR 40, ADMIN 50.
+ */
+export const ADMIN_USER = {
+	id: "user_admin",
+	email: "admin@example.com",
+	name: "Admin",
+	role: 50,
+	createdAt: "2026-01-01T00:00:00.000Z",
+};
+export const EDITOR_USER = { ...ADMIN_USER, id: "user_editor", email: "editor@example.com", name: "Editor", role: 40 };

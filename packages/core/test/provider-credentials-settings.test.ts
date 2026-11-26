@@ -15,7 +15,7 @@ import {
 	resetPaymentProviders,
 } from "../src/payment-provider";
 import { adminApiRoutes } from "../src/routes/admin-api";
-import { makeRouteContext } from "./helpers/route-harness";
+import { ADMIN_USER, makeRouteContext } from "./helpers/route-harness";
 
 afterEach(() => resetPaymentProviders());
 
@@ -38,6 +38,7 @@ async function call(ctx: PluginContext, method: "GET" | "POST", input?: Record<s
 	const routeCtx = {
 		request: new Request("http://test/admin/settings", { method }),
 		input,
+		user: ADMIN_USER,
 	} as unknown as RouteContext;
 	const res = (await adminApiRoutes["admin/settings"].handler(routeCtx, ctx)) as Response;
 	return { status: res.status, body: (await res.json()) as Record<string, unknown> };
@@ -96,7 +97,8 @@ describe("provider credentials in the settings API", () => {
 			const routeCtx = {
 				request: new Request("http://test/admin/settings/validate", { method: "POST" }),
 				input: { key: "paymentProvider", value },
-			} as unknown as RouteContext;
+				user: ADMIN_USER,
+	} as unknown as RouteContext;
 			const res = (await adminApiRoutes["admin/settings/validate"].handler(
 				routeCtx,
 				ctx,

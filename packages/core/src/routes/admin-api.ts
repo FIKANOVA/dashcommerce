@@ -150,6 +150,41 @@ function storeOf<T>(ctx: PluginContext, name: string): StorageCollection<T> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Admin-only actions — refunds and payment settings
+// ────────────────────────────────────────────────────────────────────────────
+
+/** EmDash's `Role.ADMIN`. Plugin routes see the caller's role as a number. */
+const EMDASH_ADMIN_ROLE = 50;
+
+/**
+ * EmDash already refuses these routes to non-admins while they declare no
+ * `permission` (the default is `plugins:manage`). Checking here as well keeps
+ * refunds and payment keys admin-only if a route is ever opened to editors.
+ * No `ctx.user` means we can't tell who is asking, so the answer is no.
+ */
+function isAdmin(routeCtx: RouteContext): boolean {
+	const role = routeCtx.user?.role;
+	return typeof role === "number" && role >= EMDASH_ADMIN_ROLE;
+}
+
+function adminOnly(message: string): Response {
+	return json({ error: { code: "ADMIN_ONLY", message } }, 403);
+}
+
+/** Settings that pick or reach the payment provider: admin-only. */
+const PAYMENT_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
+	"paymentProvider",
+	"checkoutMode",
+	"stripeSecretKey",
+	"stripePublishableKey",
+	"stripeWebhookSecret",
+]);
+
+function isPaymentSetting(key: string): boolean {
+	return PAYMENT_SETTINGS_KEYS.has(key) || providerCredentialSetting(key) !== undefined;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Settings — GET/POST with secret masking (validation lives in settings/schema)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -324,6 +359,7 @@ async function queryOrders(
 async function getOrderDetail(
 	ctx: PluginContext,
 	orderId: string,
+	canRefund: boolean,
 ): Promise<Response> {
 	const order = await storeOf<Order>(ctx, "orders").get(orderId);
 	if (!order) return json({ error: "Order not found" }, 404);
@@ -339,7 +375,7 @@ async function getOrderDetail(
 			limit: 100,
 		})
 	).items.map((r) => ({ ...(r.data as Refund), id: r.id }));
-	return json({ order: { ...order, id: orderId }, items, refunds });
+	return json({ order: { ...order, id: orderId }, items, refunds, canRefund });
 }
 
 async function postOrderRefund(
@@ -2093,11 +2129,12 @@ export const adminApiRoutes = {
 			const ctx = getCtx(routeCtx, _c);
 			const id = queryOrPath(routeCtx.request, "id", "orders");
 			if (!id) return json({ error: "Missing order id" }, 400);
-			return getOrderDetail(ctx, id);
+			return getOrderDetail(ctx, id, isAdmin(routeCtx));
 		},
 	},
 	"admin/orders/refund": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can issue refunds.");
 			const ctx = getCtx(routeCtx, _c);
 			const id = queryOrPath(routeCtx.request, "id", "orders");
 			if (!id) return json({ error: "Missing order id" }, 400);
@@ -2420,6 +2457,9 @@ export const adminApiRoutes = {
 						delete body[k];
 					}
 				}
+				if (!isAdmin(routeCtx) && Object.keys(body).some(isPaymentSetting)) {
+					return adminOnly("Only an admin can change payment settings.");
+				}
 				const currentEnabled = await ctx.kv.get<string[]>(
 					"settings:enabledCurrencies",
 				);
@@ -2459,6 +2499,7 @@ export const adminApiRoutes = {
 				...values,
 				_secrets: secrets,
 				_providers: await providerSettingsRows(ctx),
+				_canManagePayments: isAdmin(routeCtx),
 			});
 		},
 	},
@@ -2466,6 +2507,7 @@ export const adminApiRoutes = {
 	// Stripe health check — used by the Settings page "Test connection" button.
 	"admin/stripe/ping": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can check payment settings.");
 			const ctx = getCtx(routeCtx, _c);
 			const client = await loadStripeClient(ctx);
 			if (!client) {
@@ -2498,6 +2540,7 @@ export const adminApiRoutes = {
 	// 200 with ok: false; only a bad request is an error status.
 	"admin/payments/check-connection": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can check payment settings.");
 			const ctx = getCtx(routeCtx, _c);
 			const { providerId } = (routeCtx.input ?? {}) as { providerId?: unknown };
 			const provider =
