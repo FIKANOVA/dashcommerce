@@ -66,7 +66,7 @@ export function computeTax(
 		const rate = policy.flatTaxPercent ?? 0;
 		if (rate === 0) return { lines: [], total: zero(base.currency) };
 		const amount = pct(base, rate);
-		const line: TaxLine = { label: "Sales tax", amount, rate };
+		const line: TaxLine = { label: "Tax", amount, rate };
 		return { lines: [line], total: amount };
 	}
 	if (policy.taxMode === "table" && policy.taxResolver) {

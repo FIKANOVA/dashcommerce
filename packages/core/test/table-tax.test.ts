@@ -122,6 +122,11 @@ describe("table tax on the cart", () => {
 		expect(inRegion.body.cart.taxLines.map((l) => l.label)).toEqual(["VAT", "County levy"]);
 		expect(inRegion.body.cart.taxTotal.amount).toBe(24000 + 3000);
 
+		const typedLoosely = await call("cart/contact", {
+			shippingAddress: address({ region: " nairobi " }),
+		});
+		expect(typedLoosely.body.cart.taxLines.map((l) => l.label)).toEqual(["VAT", "County levy"]);
+
 		const elsewhere = await call("cart/contact", {
 			shippingAddress: address({ region: "Kisumu" }),
 		});

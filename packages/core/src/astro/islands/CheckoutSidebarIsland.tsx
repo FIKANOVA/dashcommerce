@@ -197,8 +197,8 @@ export default function CheckoutSidebarIsland({
 						<span>{formatMoney(cart.shippingTotal, locale)}</span>
 					</div>
 				)}
-				{taxRows(cart.taxLines, cart.taxTotal).map((row) => (
-					<div className="dc-row" key={row.label}>
+				{taxRows(cart.taxLines, cart.taxTotal).map((row, i) => (
+					<div className="dc-row" key={`${i}-${row.label}`}>
 						<span>{row.label}</span>
 						<span>{formatMoney(row.amount, locale)}</span>
 					</div>

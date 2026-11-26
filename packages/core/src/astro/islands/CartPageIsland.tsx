@@ -384,8 +384,8 @@ export default function CartPageIsland({
 						<span>{formatMoney(cart.shippingTotal, locale)}</span>
 					</div>
 				)}
-				{taxRows(cart.taxLines, cart.taxTotal).map((row) => (
-					<div className="dc-total-row" key={row.label}>
+				{taxRows(cart.taxLines, cart.taxTotal).map((row, i) => (
+					<div className="dc-total-row" key={`${i}-${row.label}`}>
 						<span>{row.label}</span>
 						<span>{formatMoney(row.amount, locale)}</span>
 					</div>

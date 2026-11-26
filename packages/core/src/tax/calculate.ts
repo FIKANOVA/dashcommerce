@@ -30,7 +30,7 @@ export function selectApplicableRates(
 ): TaxRate[] {
 	const matches = rates.filter((r) => {
 		if (r.country !== lookup.country) return false;
-		if (r.region && r.region !== lookup.region) return false;
+		if (r.region && normaliseRegion(r.region) !== normaliseRegion(lookup.region)) return false;
 		if (r.postalCode) {
 			const postalCode = normalisePostalCode(lookup.postalCode);
 			if (!postalCode || !postalCode.startsWith(normalisePostalCode(r.postalCode))) return false;
@@ -39,6 +39,11 @@ export function selectApplicableRates(
 		return true;
 	});
 	return matches.sort((a, b) => a.priority - b.priority);
+}
+
+/** Regions compare without case or surrounding spaces: " nairobi " matches "Nairobi". */
+function normaliseRegion(value: string | undefined): string {
+	return (value ?? "").trim().toLowerCase();
 }
 
 /** Postcodes compare without case or spaces: "sw1a 1aa" matches a "SW1A" rate. */

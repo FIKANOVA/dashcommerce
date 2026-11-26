@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { taxLineLabel, taxRows } from "../src/astro/tax-rows";
+import { recalculate } from "../src/cart/calculate";
 import { composeOrderReceipt } from "../src/emails/receipt";
 import type { Order } from "../src/types";
 
@@ -45,6 +46,30 @@ describe("taxRows", () => {
 	it("shows a total without lines as one Tax row, and nothing for zero tax", () => {
 		expect(taxRows(undefined, kes(500))).toEqual([{ label: "Tax", amount: kes(500) }]);
 		expect(taxRows([], kes(0))).toEqual([]);
+	});
+});
+
+describe("flat-rate tax", () => {
+	it("shows as Tax with its rate", () => {
+		const cart = {
+			currency: "KES",
+			items: [
+				{
+					lineId: "l1",
+					productId: "p",
+					quantity: 1,
+					title: "Mug",
+					isDigital: false,
+					unitPrice: kes(10000),
+					lineSubtotal: kes(10000),
+				},
+			],
+			coupons: [],
+		} as unknown as Parameters<typeof recalculate>[0];
+		const priced = recalculate(cart, { taxMode: "flat", flatTaxPercent: 16 });
+		expect(taxRows(priced.taxLines, priced.taxTotal)).toEqual([
+			{ label: "Tax 16%", amount: kes(1600) },
+		]);
 	});
 });
 
