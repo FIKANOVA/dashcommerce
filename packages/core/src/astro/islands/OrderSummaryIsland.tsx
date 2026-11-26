@@ -17,6 +17,8 @@ interface Order {
 	customerEmail: string;
 	total: Money;
 	currency: string;
+	pickup?: { location?: string; instructions?: string; hours?: string };
+	shippingMethodLabel?: string;
 }
 type PollResponse =
 	| { status: "ready"; order: Order; items: Item[] }
@@ -152,6 +154,27 @@ export default function OrderSummaryIsland({
 			<p className="dc-total">
 				<strong>Total:</strong> {formatMoney(order.total)}
 			</p>
+			{order.pickup && (
+				<div className="dc-pickup">
+					<h3>Pickup{order.shippingMethodLabel ? ` · ${order.shippingMethodLabel}` : ""}</h3>
+					{order.pickup.location && (
+						<p>
+							<strong>Collect from:</strong> {order.pickup.location}
+						</p>
+					)}
+					{order.pickup.hours && (
+						<p>
+							<strong>Opening hours:</strong> {order.pickup.hours}
+						</p>
+					)}
+					{order.pickup.instructions && (
+						<p>
+							<strong>Directions:</strong> {order.pickup.instructions}
+						</p>
+					)}
+					<p>Bring your order number when you collect.</p>
+				</div>
+			)}
 			<style>{`
         .dc-order-summary {
           max-width: 32rem;
@@ -175,6 +198,18 @@ export default function OrderSummaryIsland({
           font-size: 1.2em;
           margin-top: 1rem;
           color: var(--text, #111);
+        }
+        .dc-pickup {
+          margin-top: 1rem;
+          white-space: pre-line;
+          overflow-wrap: anywhere;
+        }
+        .dc-pickup h3 {
+          margin: 0 0 0.5rem;
+          font-size: 1em;
+        }
+        .dc-pickup p {
+          margin: 0.25rem 0;
         }
       `}</style>
 		</section>

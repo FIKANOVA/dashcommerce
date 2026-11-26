@@ -43,7 +43,12 @@ interface CartState {
 	total: Money;
 	currency: string;
 	shippingAddress?: unknown;
-	shippingMethod?: { id: string; label: string; amount: Money };
+	shippingMethod?: { id: string; label: string; amount: Money; pickup?: PickupDetails };
+}
+interface PickupDetails {
+	location?: string;
+	instructions?: string;
+	hours?: string;
 }
 
 const API = "/_emdash/api/plugins/dashcommerce";
@@ -238,6 +243,27 @@ export default function CheckoutSidebarIsland({
 				/>
 			)}
 
+			{cart.shippingMethod?.pickup && (
+				<section className="dc-sidebar-pickup" aria-label="Pickup details">
+					<h4>Pickup</h4>
+					{cart.shippingMethod.pickup.location && (
+						<p>
+							<strong>Collect from:</strong> {cart.shippingMethod.pickup.location}
+						</p>
+					)}
+					{cart.shippingMethod.pickup.hours && (
+						<p>
+							<strong>Opening hours:</strong> {cart.shippingMethod.pickup.hours}
+						</p>
+					)}
+					{cart.shippingMethod.pickup.instructions && (
+						<p>
+							<strong>Directions:</strong> {cart.shippingMethod.pickup.instructions}
+						</p>
+					)}
+				</section>
+			)}
+
 			<section className="dc-sidebar-totals">
 				<div className="dc-row">
 					<span>Subtotal</span>
@@ -295,6 +321,8 @@ export default function CheckoutSidebarIsland({
 				.dc-sidebar-shipping label { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; cursor: pointer; color: var(--text, #111); }
 				.dc-sidebar-method-amt { font-variant-numeric: tabular-nums; color: var(--text-mid, #444); }
 				.dc-checkout-sidebar .dc-coupon { padding: 0.75rem 0 0; margin-bottom: 0; }
+				.dc-sidebar-pickup { margin-top: 0.75rem; font-size: 0.9em; color: var(--text, #111); white-space: pre-line; overflow-wrap: anywhere; }
+				.dc-sidebar-pickup p { margin: 0.25rem 0; }
 				.dc-sidebar-totals { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-mid, #e4e4e7); }
 				.dc-row { display: flex; justify-content: space-between; padding: 0.25rem 0; font-size: 0.9em; color: var(--text, #111); }
 				.dc-row-grand { padding-top: 0.5rem; margin-top: 0.5rem; border-top: 1px solid var(--border-mid, #e4e4e7); font-size: 1em; color: var(--text, #111); }
