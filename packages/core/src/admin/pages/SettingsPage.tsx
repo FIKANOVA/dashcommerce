@@ -53,7 +53,7 @@ const GROUPS: GroupSpec[] = [
 		id: "store",
 		title: "Store",
 		description:
-			"Currency defaults. Only codes listed as enabled can be used at checkout.",
+			"Where the shop is based and the currencies it sells in. Only enabled currencies can be used at checkout.",
 	},
 	{
 		id: "provider",
