@@ -55,6 +55,22 @@ export interface PaymentProviderShippingOption {
 }
 
 /**
+ * One vendor's share of a split payment, computed by core from trusted cart
+ * prices. Providers must not reprice or invent shares; they only route the
+ * amounts to the account reference core supplies.
+ */
+export interface PaymentProviderSplitAllocation {
+	vendorId: string;
+	/**
+	 * The provider's payout account id: a Flutterwave subaccount (`RS_…`) or a
+	 * Paystack subaccount (`ACCT_…`).
+	 */
+	accountReference: string;
+	/** Integer minor units owed to this vendor. */
+	amountMinor: number;
+}
+
+/**
  * Hosted checkout request. Fields cover the Stripe Checkout capabilities
  * current routes actually send (shipping, billing collection, Stripe Tax,
  * subscription mode/trials/metadata, Connect transfer data + application
@@ -94,6 +110,14 @@ export interface InitCheckoutInput {
 	discounts?: Array<{ coupon: string }>;
 	/** Hint for gateways that restrict methods on the hosted page. */
 	preferredChannels?: string[];
+	/**
+	 * Per-vendor shares for a split payment. Present only when the provider
+	 * declares `capabilities.splits` and the cart has vendor-owned items.
+	 * Sums to `total - platformRemainderMinor`.
+	 */
+	allocations?: PaymentProviderSplitAllocation[];
+	/** Amount retained by the platform after every vendor allocation, in minor units. */
+	platformRemainderMinor?: number;
 	/**
 	 * `hosted` (default): return a redirect. `on_page`: return an `on_page`
 	 * result for the storefront to open over the page. Core asks for
@@ -287,6 +311,12 @@ export interface PaymentProviderCapabilities {
 	connect?: boolean;
 	/** Recurring `mode: "subscription"` checkout. */
 	subscriptions?: boolean;
+	/**
+	 * Split one payment across vendor payout accounts (Flutterwave
+	 * subaccounts, Paystack splits). Core then sends `allocations` on
+	 * `initCheckout`.
+	 */
+	splits?: boolean;
 }
 
 /** How the admin settings form shows and validates one credential. */
@@ -312,6 +342,53 @@ export interface PaymentStatusResult {
 	amount?: number;
 	currency?: string;
 	reason?: string;
+}
+
+/** A bank or mobile-money provider in a country, for payout onboarding. */
+export interface PaymentProviderBank {
+	code: string;
+	name: string;
+}
+
+export interface ResolvePayoutAccountInput {
+	accountNumber: string;
+	bankCode: string;
+}
+
+export interface CreatePayoutAccountInput {
+	accountNumber: string;
+	bankCode: string;
+	/** ISO-2 country of the account. */
+	country: string;
+	businessName: string;
+	businessEmail: string;
+	businessMobile: string;
+	businessContact?: string;
+	businessContactMobile?: string;
+	/**
+	 * Default split type stored on the payout account, when the provider has
+	 * one. Core still sends exact per-vendor allocations on each payment; this
+	 * is only the account's fallback configuration.
+	 */
+	splitType?: "percentage" | "flat";
+	/** Decimal percentage (0.1) or a major-unit flat amount, per `splitType`. */
+	splitValue?: number;
+	metadata?: Record<string, string>;
+}
+
+/** What a provider returns after creating a vendor payout account. */
+export interface CreatedPayoutAccount {
+	accountReference: string;
+	/** Absent when the provider cannot resolve account names. */
+	accountName?: string;
+	/** False when the provider created the account but has not verified it. */
+	verified?: boolean;
+	bankName?: string;
+	bankCode?: string;
+	country?: string;
+	/** Last four digits, never the full account number. */
+	maskedAccountNumber?: string;
+	metadata?: Record<string, string>;
 }
 
 export interface PaymentProvider {
@@ -408,4 +485,28 @@ export interface PaymentProvider {
 		ctx: PaymentProviderRuntimeContext,
 		credentials: PaymentProviderCredentials,
 	): Promise<ConnectionCheckResult>;
+
+	/**
+	 * Provider-managed payout onboarding. When a provider implements these,
+	 * Vendors can list banks, resolve an account name and create a vendor
+	 * payout account without sending the merchant to the provider's
+	 * dashboard. All three are optional and independent.
+	 */
+	listPayoutBanks?(
+		ctx: PaymentProviderRuntimeContext,
+		country: string,
+		credentials: PaymentProviderCredentials,
+	): Promise<PaymentProviderBank[]>;
+
+	resolvePayoutAccount?(
+		ctx: PaymentProviderRuntimeContext,
+		input: ResolvePayoutAccountInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<{ accountName: string }>;
+
+	createPayoutAccount?(
+		ctx: PaymentProviderRuntimeContext,
+		input: CreatePayoutAccountInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<CreatedPayoutAccount>;
 }

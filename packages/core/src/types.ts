@@ -537,9 +537,43 @@ export interface ReviewSummary {
 // Vendors (Stripe Connect)
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A vendor's payout account at one payment provider. Flutterwave uses a
+ * collection subaccount (`RS_...`); Stripe keeps using `stripeAccountId`.
+ * The account reference is provider-owned and never a secret.
+ */
+export interface VendorPaymentAccount {
+	accountReference: string;
+	status: "active" | "pending" | "disabled";
+	/** Account holder name returned by the provider's account resolution. */
+	accountName?: string;
+	/** False when the provider created the account but has not verified it. */
+	verified?: boolean;
+	bankName?: string;
+	bankCode?: string;
+	/** ISO-2 country of the payout account. */
+	country?: string;
+	/** Last four digits, never the full account number. */
+	maskedAccountNumber?: string;
+	/** Settlement currency, when the provider ties the account to one. */
+	currency?: CurrencyCode;
+	/** Human label for the admin, e.g. the bank name. */
+	label?: string;
+	/** Provider-specific extras, e.g. the numeric subaccount id. */
+	metadata?: Record<string, string>;
+	createdAt?: IsoDateTime;
+	updatedAt: IsoDateTime;
+}
+
 export interface Vendor {
 	id: string;
-	stripeAccountId: string; // acct_xxx, unique
+	/**
+	 * Stripe Connect account id (`acct_…`). Absent for vendors paid through a
+	 * different provider. The unique index treats a missing field as NULL, so
+	 * any number of non-Stripe vendors can exist; two vendors cannot share an
+	 * `acct_…`.
+	 */
+	stripeAccountId?: string;
 	name: string;
 	email: string;
 	onboardingStatus: "pending" | "active" | "restricted";
@@ -547,6 +581,11 @@ export interface Vendor {
 	detailsSubmitted: boolean;
 	chargesEnabled: boolean;
 	payoutsEnabled: boolean;
+	/**
+	 * Payout accounts for providers other than Stripe, keyed by provider id.
+	 * Stripe Connect keeps its own fields above.
+	 */
+	paymentAccounts?: Record<string, VendorPaymentAccount>;
 	createdAt: IsoDateTime;
 	updatedAt: IsoDateTime;
 }
