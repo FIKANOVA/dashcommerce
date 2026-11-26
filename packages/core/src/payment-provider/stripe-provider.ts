@@ -146,6 +146,70 @@ function unhandled(
 	};
 }
 
+/** The fields of a Stripe Dispute object core reads. */
+interface StripeDispute {
+	id?: string;
+	amount?: number;
+	currency?: string;
+	payment_intent?: string | null;
+	reason?: string;
+	status?: string;
+	evidence_details?: { due_by?: number | null };
+}
+
+/**
+ * Stripe dispute status → core's. `warning_closed` ends an inquiry that
+ * never became a chargeback, so the store keeps the money.
+ */
+const STRIPE_DISPUTE_STATUS: Record<string, "open" | "won" | "lost"> = {
+	warning_needs_response: "open",
+	warning_under_review: "open",
+	needs_response: "open",
+	under_review: "open",
+	warning_closed: "won",
+	won: "won",
+	lost: "lost",
+};
+
+const STRIPE_DISPUTE_EVENTS = new Set([
+	"charge.dispute.created",
+	"charge.dispute.updated",
+	"charge.dispute.closed",
+]);
+
+function disputeEvent(
+	eventType: string,
+	dispute: StripeDispute | undefined,
+	raw: unknown,
+	providerEventId?: string,
+): NormalizedPaymentEvent {
+	const status = dispute?.status ? STRIPE_DISPUTE_STATUS[dispute.status] : undefined;
+	if (
+		!providerEventId ||
+		!dispute?.id ||
+		!dispute.payment_intent ||
+		!status ||
+		typeof dispute.amount !== "number" ||
+		!dispute.currency
+	) {
+		return unhandled(eventType, raw, providerEventId);
+	}
+	const dueBy = dispute.evidence_details?.due_by;
+	return {
+		type: "dispute.updated",
+		providerId: "stripe",
+		providerEventId,
+		providerDisputeId: dispute.id,
+		paymentReference: dispute.payment_intent,
+		status,
+		amount: dispute.amount,
+		currency: dispute.currency.toUpperCase(),
+		...(dispute.reason ? { reason: dispute.reason } : {}),
+		...(typeof dueBy === "number" ? { dueAt: new Date(dueBy * 1000).toISOString() } : {}),
+		raw,
+	};
+}
+
 function parseStripeEvent(rawBody: string): {
 	id?: string;
 	type?: string;
@@ -315,6 +379,15 @@ export const stripePaymentProvider: PaymentProvider = {
 				reason: (pi as { last_payment_error?: { message?: string } }).last_payment_error?.message,
 				raw: event,
 			};
+		}
+
+		if (STRIPE_DISPUTE_EVENTS.has(event.type)) {
+			return disputeEvent(
+				event.type,
+				event.data?.object as StripeDispute | undefined,
+				event,
+				providerEventId,
+			);
 		}
 
 		return unhandled(event.type, event, providerEventId);

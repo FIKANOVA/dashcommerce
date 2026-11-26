@@ -1024,3 +1024,131 @@ describe("@dashcommerce/paystack multi-vendor through core", () => {
 		});
 	});
 });
+
+describe("@dashcommerce/paystack disputes through core", () => {
+	async function paidOrder(session: string) {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(paystackSettings, paystack.fetch);
+		const sent: Array<{ to: string; subject: string; text: string }> = [];
+		Object.assign(ctx, {
+			site: { url: "https://test.dashcommerce.dev", name: "Shop" },
+			email: { send: async (m: { to: string; subject: string; text: string }) => sent.push(m) },
+			users: {
+				list: async () => ({
+					items: [{ id: "u1", email: "owner@example.com", name: null, role: 50, createdAt: "" }],
+				}),
+			},
+		});
+		const initRes = await startCheckout(ctx, session);
+		const { orderDraftId } = (await initRes.json()) as { orderDraftId: string };
+		const reference = String(paystack.getLastInit()?.reference);
+		const tx = paystack.transactions.get(reference);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = chargeSuccess(reference, orderDraftId, tx.id);
+		await deliverWebhook(ctx, charge, await sign(SECRET_KEY, charge));
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		sent.length = 0; // drop the customer's order receipt
+		return { ctx, getCol, sent, order, reference, transactionId: tx.id };
+	}
+
+	function disputeEvent(
+		event: string,
+		reference: string,
+		transactionId: number,
+		extra: Record<string, unknown> = {},
+	) {
+		return JSON.stringify({
+			event,
+			data: {
+				id: 4455,
+				status: "awaiting-merchant-feedback",
+				resolution: null,
+				refund_amount: 150000,
+				currency: "KES",
+				dueAt: "2026-12-01T09:00:00.000Z",
+				category: "chargeback",
+				transaction: { id: transactionId, reference, amount: 150000, currency: "KES" },
+				...extra,
+			},
+		});
+	}
+
+	async function deliver(ctx: import("emdash").PluginContext, payload: string) {
+		return deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+	}
+
+	it("marks the order disputed and emails the admins once", async () => {
+		const { ctx, getCol, sent, order, reference, transactionId } = await paidOrder(
+			"sess_paystack_dispute_open",
+		);
+		const create = disputeEvent("charge.dispute.create", reference, transactionId);
+		const res = await deliver(ctx, create);
+		expect(res.status).toBe(200);
+		const after = getCol("orders").get(order.id) as Order;
+		expect(after.disputes?.[0]).toMatchObject({
+			providerId: "paystack",
+			providerDisputeId: "4455",
+			status: "open",
+			dueAt: "2026-12-01T09:00:00.000Z",
+		});
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.text).toContain("Paystack dashboard");
+
+		// A repeat delivery and a reminder do not email again.
+		expect(((await (await deliver(ctx, create)).json()) as { duplicate?: boolean }).duplicate).toBe(
+			true,
+		);
+		await deliver(ctx, disputeEvent("charge.dispute.remind", reference, transactionId));
+		expect(sent).toHaveLength(1);
+	});
+
+	it("counts a merchant-accepted dispute like a refund", async () => {
+		const { ctx, getCol, order, reference, transactionId } = await paidOrder(
+			"sess_paystack_dispute_lost",
+		);
+		await deliver(ctx, disputeEvent("charge.dispute.create", reference, transactionId));
+		await deliver(
+			ctx,
+			disputeEvent("charge.dispute.resolve", reference, transactionId, {
+				status: "resolved",
+				resolution: "merchant-accepted",
+			}),
+		);
+		const after = getCol("orders").get(order.id) as Order;
+		expect(after.disputes?.[0]?.status).toBe("lost");
+		expect(after.refundedTotal.amount).toBe(150000);
+		expect(after.paymentStatus).toBe("refunded");
+	});
+
+	it("leaves the totals alone when the dispute is declined", async () => {
+		const { ctx, getCol, order, reference, transactionId } = await paidOrder(
+			"sess_paystack_dispute_won",
+		);
+		await deliver(ctx, disputeEvent("charge.dispute.create", reference, transactionId));
+		await deliver(
+			ctx,
+			disputeEvent("charge.dispute.resolve", reference, transactionId, {
+				status: "resolved",
+				resolution: "declined",
+			}),
+		);
+		const after = getCol("orders").get(order.id) as Order;
+		expect(after.disputes?.[0]?.status).toBe("won");
+		expect(after.refundedTotal.amount).toBe(0);
+		expect(after.paymentStatus).toBe("paid");
+	});
+
+	it("leaves a dispute without a transaction reference unhandled", () => {
+		const event = paystackPaymentProvider.parseWebhookEvent(
+			JSON.stringify({ event: "charge.dispute.create", data: { id: 1, currency: "KES" } }),
+		);
+		expect(event.type).toBe("unhandled");
+	});
+
+	it("leaves a resolved dispute with an unknown resolution unhandled", () => {
+		const event = paystackPaymentProvider.parseWebhookEvent(
+			disputeEvent("charge.dispute.resolve", "ref_1", 1, { resolution: "something-new" }),
+		);
+		expect(event.type).toBe("unhandled");
+	});
+});

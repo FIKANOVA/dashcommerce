@@ -380,6 +380,85 @@ function refundEvent(
 }
 
 /**
+ * Dispute webhooks. Paystack's docs name the events but do not show the
+ * payload, so it is read defensively from the Dispute object's fields and
+ * anything missing leaves the event unhandled rather than guessed.
+ */
+interface PaystackDisputeWebhookData {
+	id?: number | string;
+	status?: string;
+	resolution?: string | null;
+	refund_amount?: number | null;
+	currency?: string;
+	dueAt?: string | null;
+	due_at?: string | null;
+	category?: string;
+	transaction?: { reference?: string; amount?: number; currency?: string };
+}
+
+const DISPUTE_EVENTS = new Set([
+	"charge.dispute.create",
+	"charge.dispute.remind",
+	"charge.dispute.resolve",
+]);
+
+/** `merchant-accepted` means the customer is refunded; `declined` means the shop keeps it. */
+const DISPUTE_RESOLUTION: Record<string, "won" | "lost"> = {
+	"merchant-accepted": "lost",
+	declined: "won",
+};
+
+function disputeEvent(
+	eventName: string,
+	data: PaystackDisputeWebhookData | undefined,
+	raw: unknown,
+): NormalizedPaymentEvent {
+	const unhandled: NormalizedPaymentEvent = {
+		type: "unhandled",
+		providerEventType: eventName,
+		raw,
+	};
+	const id = data?.id;
+	const reference = data?.transaction?.reference;
+	if ((typeof id !== "number" && typeof id !== "string") || String(id) === "" || !reference) {
+		return unhandled;
+	}
+	let status: "open" | "won" | "lost";
+	if (data?.resolution) {
+		const resolved = DISPUTE_RESOLUTION[data.resolution];
+		if (!resolved) return unhandled;
+		status = resolved;
+	} else if (eventName === "charge.dispute.resolve" || data?.status === "resolved") {
+		return unhandled;
+	} else {
+		status = "open";
+	}
+	const amount =
+		typeof data?.refund_amount === "number" && data.refund_amount > 0
+			? data.refund_amount
+			: data?.transaction?.amount;
+	const currency = data?.currency ?? data?.transaction?.currency;
+	if (typeof amount !== "number" || !currency) return unhandled;
+	const dueAt = data?.dueAt ?? data?.due_at;
+	const due = dueAt ? new Date(dueAt) : undefined;
+	return {
+		type: "dispute.updated",
+		providerId: "paystack",
+		// No event id from Paystack: the event name plus dispute id stands in,
+		// as for refunds.
+		providerEventId: `${eventName}:${String(id)}`,
+		providerDisputeId: String(id),
+		paymentReference: reference,
+		status,
+		amount,
+		currency: currency.toUpperCase(),
+		...(data?.category ? { reason: data.category } : {}),
+		...(due && !Number.isNaN(due.getTime()) ? { dueAt: due.toISOString() } : {}),
+		raw,
+	};
+}
+
+/**
  * Core's allocations are exact minor-unit shares, so they become a flat
  * split passed with this one payment: each vendor's subaccount gets its
  * share, and the shop keeps the rest and pays Paystack's fee
@@ -672,6 +751,10 @@ export const paystackPaymentProvider: PaymentProvider = {
 
 		if (event.event.startsWith("refund.")) {
 			return refundEvent(event.event, event.data as unknown as PaystackRefundWebhookData, event);
+		}
+
+		if (DISPUTE_EVENTS.has(event.event)) {
+			return disputeEvent(event.event, event.data as unknown as PaystackDisputeWebhookData, event);
 		}
 
 		// Paystack documents `charge.success` for completed payments. It has no
