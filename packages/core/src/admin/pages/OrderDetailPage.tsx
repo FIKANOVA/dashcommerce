@@ -243,10 +243,18 @@ function OrderHeader({
 						<MoneyDisplay value={order.refundedTotal} />
 					</span>
 				</div>
-				<div style={{ fontSize: 13, color: T.text }}>
-					<strong>Ship to:</strong>{" "}
-					{`${order.shippingAddress.line1}, ${order.shippingAddress.city}, ${order.shippingAddress.country}`}
-				</div>
+				{order.pickup ? (
+					<div style={{ fontSize: 13, color: T.text, whiteSpace: "pre-line" }}>
+						<strong>Pickup{order.shippingMethodLabel ? ` · ${order.shippingMethodLabel}` : ""}:</strong>{" "}
+						{order.pickup.location ?? "No location set on the pickup method"}
+						{order.pickup.hours && <div>Hours: {order.pickup.hours}</div>}
+					</div>
+				) : (
+					<div style={{ fontSize: 13, color: T.text }}>
+						<strong>Ship to:</strong>{" "}
+						{`${order.shippingAddress.line1}, ${order.shippingAddress.city}, ${order.shippingAddress.country}`}
+					</div>
+				)}
 				{targets.length > 0 && (
 					<div style={{ ...rowStyle, marginTop: 4 }}>
 						<span style={{ fontSize: 13, color: T.text }}>Move to:</span>
