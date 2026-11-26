@@ -7,7 +7,7 @@
  *   DELETE /cart/item?lineId={id}        — remove
  *   POST   /cart/coupon                  — apply { code }
  *   DELETE /cart/coupon/remove?code={code} — remove
- *   POST   /cart/shipping-location       — minimal ship-to {country, postalCode} (hosted checkout)
+ *   POST   /cart/shipping-location       — minimal ship-to {country, postalCode?} (hosted checkout)
  *   POST   /cart/shipping-address        — full address → recalc tax (embedded checkout)
  *   POST   /cart/shipping-methods        — list available rates for current ship-to
  *   POST   /cart/shipping-method         — set method id
@@ -88,6 +88,30 @@ function errorResponse(message: string, status = 400, setCookie?: string): Respo
 }
 
 const SID_COOKIE = "dashcommerce_sid";
+
+/**
+ * The cart's currency, for server-rendered pages: they read it (see
+ * `storefrontCurrency` in `@dashcommerce/core/astro`) and pass it to the
+ * product components, so prices match the cart. Not a secret, and never
+ * trusted for pricing: the cart itself stays the source of truth.
+ */
+export const CURRENCY_COOKIE = "dashcommerce_currency";
+
+function currencyCookie(currency: string): string {
+	return `${CURRENCY_COOKIE}=${encodeURIComponent(currency)}; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`;
+}
+
+/**
+ * A cart response. Also sets the currency cookie, and the session cookie
+ * when `resolveSessionId` minted a new id. Uses `Headers` so both
+ * `Set-Cookie` values survive.
+ */
+function cartResponse(cart: CartState, setCookie?: string): Response {
+	const headers = new Headers({ "Content-Type": "application/json" });
+	if (setCookie) headers.append("Set-Cookie", setCookie);
+	if (cart?.currency) headers.append("Set-Cookie", currencyCookie(cart.currency));
+	return new Response(JSON.stringify({ cart }), { headers });
+}
 
 // randomId moved to util/ids.ts; see import above.
 
@@ -173,7 +197,7 @@ export const cartRoutes = {
 				repriced.subtotal.amount !== cart.subtotal.amount ||
 				repriced.shippingTotal.amount !== cart.shippingTotal.amount;
 			const out = changed ? await save(ctx, repriced) : cart;
-			return jsonResponse({ cart: out }, withSessionCookie(setCookie));
+			return cartResponse(out, setCookie);
 		},
 	},
 
@@ -295,7 +319,7 @@ export const cartRoutes = {
 			const refreshed = await refreshAppliedCoupons(ctx, withItems);
 			const updated = recalculate(refreshed, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -328,7 +352,7 @@ export const cartRoutes = {
 				ctx,
 				recalculate(emptied, await readPricingPolicy(ctx)),
 			);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -354,7 +378,7 @@ export const cartRoutes = {
 			try {
 				const next = switchCurrency(cart, code);
 				const saved = await save(ctx, next);
-				return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+				return cartResponse(saved, setCookie);
 			} catch (err) {
 				return errorResponse(
 					err instanceof Error ? err.message : "Could not switch currency",
@@ -377,7 +401,7 @@ export const cartRoutes = {
 				await readPricingPolicy(ctx),
 			);
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -405,7 +429,7 @@ export const cartRoutes = {
 			if (body.notes !== undefined) next.notes = body.notes;
 			const updated = recalculate(next, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -475,7 +499,7 @@ export const cartRoutes = {
 			const refreshed = await refreshAppliedCoupons(ctx, withItems);
 			const updated = recalculate(refreshed, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -522,7 +546,7 @@ export const cartRoutes = {
 				};
 				const updated = recalculate(nextCart, await readPricingPolicy(ctx));
 				const saved = await save(ctx, updated);
-				return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+				return cartResponse(saved, setCookie);
 			} catch (err) {
 				return errorResponse(
 					err instanceof Error ? err.message : "Could not apply coupon",
@@ -563,18 +587,22 @@ export const cartRoutes = {
 			};
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
 	/**
 	 * Lightweight "where does this ship to?" endpoint used by the
 	 * hosted-checkout pre-flight form. Accepts just `{country,
-	 * postalCode}`, writes a placeholder `shippingAddress` on the cart
+	 * postalCode?}`, writes a placeholder `shippingAddress` on the cart
 	 * so that zone-picking + rate calc can run before we redirect the
 	 * customer to Stripe's page. The remaining address fields
 	 * (name/line1/city/region) will be populated post-redirect from
 	 * `checkout.session.completed`.
+	 *
+	 * The postcode is optional: shipping zones match on country and
+	 * region only, and many addresses have no postcode. It is kept when
+	 * given, for tax rates that match on postcode prefixes.
 	 *
 	 * Contrast with `cart/contact`, which requires the full address
 	 * because the embedded-Elements flow has nowhere else to collect
@@ -588,12 +616,9 @@ export const cartRoutes = {
 				postalCode?: string;
 			};
 			const country = body.country?.trim().toUpperCase();
-			const postalCode = body.postalCode?.trim();
+			const postalCode = body.postalCode?.trim() ?? "";
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
-			}
-			if (!postalCode) {
-				return errorResponse("postalCode required", 400);
 			}
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
@@ -616,7 +641,7 @@ export const cartRoutes = {
 			};
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 
@@ -746,7 +771,7 @@ export const cartRoutes = {
 			};
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
-			return jsonResponse({ cart: saved }, withSessionCookie(setCookie));
+			return cartResponse(saved, setCookie);
 		},
 	},
 

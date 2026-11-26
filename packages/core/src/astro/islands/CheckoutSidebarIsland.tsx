@@ -1,7 +1,7 @@
 /**
  * Order summary sidebar for the checkout page. Polls the cart + the
  * available shipping methods (once an address is on the cart), lets
- * the user pick a method, and renders running totals.
+ * the user pick a method and apply a coupon, and renders running totals.
  *
  * Listens for `dashcommerce:cart-updated` and refetches on every
  * update so the totals stay in sync with payment-form state changes
@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { type TaxLineLike, taxRows } from "../tax-rows";
+import CouponBox, { type AppliedCoupon } from "./CouponBox";
 
 interface Money {
 	currency: string;
@@ -29,6 +30,7 @@ interface ShippingRateOption {
 }
 interface CartState {
 	items: CartLine[];
+	coupons: AppliedCoupon[];
 	subtotal: Money;
 	discountTotal: Money;
 	shippingTotal: Money;
@@ -56,10 +58,19 @@ function formatMoney(m: Money | null | undefined, locale = "en-US") {
 
 export interface CheckoutSidebarIslandProps {
 	locale?: string;
+	/**
+	 * Show the coupon box (default). Turn off when the payment is set up
+	 * before the customer presses Pay, as with Stripe Elements: a code
+	 * applied after that would show in the summary but not be charged.
+	 * Hosted and on-page checkouts (HostedCheckoutForm) fix the amount on
+	 * Pay, so they keep the box.
+	 */
+	couponEntry?: boolean;
 }
 
 export default function CheckoutSidebarIsland({
 	locale = "en-US",
+	couponEntry = true,
 }: CheckoutSidebarIslandProps) {
 	const [cart, setCart] = useState<CartState | null>(null);
 	const [methods, setMethods] = useState<ShippingRateOption[]>([]);
@@ -180,6 +191,17 @@ export default function CheckoutSidebarIsland({
 				</section>
 			)}
 
+			{couponEntry && (
+				<CouponBox<CartState>
+					coupons={cart.coupons}
+					onCart={setCart}
+					onPendingChange={setPending}
+					disabled={pending}
+					headingLevel={4}
+					locale={locale}
+				/>
+			)}
+
 			<section className="dc-sidebar-totals">
 				<div className="dc-row">
 					<span>Subtotal</span>
@@ -231,6 +253,7 @@ export default function CheckoutSidebarIsland({
 				.dc-sidebar-shipping li { padding: 0.25rem 0; }
 				.dc-sidebar-shipping label { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; cursor: pointer; color: var(--text, #111); }
 				.dc-sidebar-method-amt { font-variant-numeric: tabular-nums; color: var(--text-mid, #444); }
+				.dc-checkout-sidebar .dc-coupon { padding: 0.75rem 0 0; margin-bottom: 0; }
 				.dc-sidebar-totals { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-mid, #e4e4e7); }
 				.dc-row { display: flex; justify-content: space-between; padding: 0.25rem 0; font-size: 0.9em; color: var(--text, #111); }
 				.dc-row-grand { padding-top: 0.5rem; margin-top: 0.5rem; border-top: 1px solid var(--border-mid, #e4e4e7); font-size: 1em; color: var(--text, #111); }

@@ -2,6 +2,8 @@
 import { getEmDashCollection } from "emdash";
 import { Image } from "emdash/ui";
 import Shop from "../../layouts/Shop.astro";
+import { formatPrice, type PriceMap } from "../../lib/price";
+import { storefrontCurrency } from "@dashcommerce/core/astro";
 
 export const prerender = false;
 
@@ -23,13 +25,8 @@ const products = filterParam === "all"
   ? allProducts
   : allProducts.filter((p) => (p.data.type as string) === filterParam);
 
-type PriceMap = Record<string, { amount: number }>;
-
-const fmt = (priceMap?: PriceMap) => {
-  const p = priceMap?.USD;
-  if (!p) return null;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(p.amount / 100);
-};
+const currency = storefrontCurrency(Astro.cookies);
+const fmt = (priceMap?: PriceMap) => formatPrice(priceMap, currency);
 
 const typeGrad: Record<string, string> = {
   simple:       "linear-gradient(135deg,#2d1800,#4a2c0a)",

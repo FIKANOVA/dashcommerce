@@ -5,8 +5,14 @@ import CheckoutSidebarIsland from "../islands/CheckoutSidebarIsland.tsx";
 
 interface Props {
 	locale?: string;
+	/**
+	 * Show the coupon box (default). Pass `false` when the payment is set up
+	 * before the customer presses Pay (Stripe Elements), so a code applied
+	 * afterwards can't show a discount that isn't charged.
+	 */
+	couponEntry?: boolean;
 }
 
-const { locale } = Astro.props;
+const { locale, couponEntry = true } = Astro.props;
 ---
-<CheckoutSidebarIsland client:load locale={locale} />
+<CheckoutSidebarIsland client:load locale={locale} couponEntry={couponEntry} />
