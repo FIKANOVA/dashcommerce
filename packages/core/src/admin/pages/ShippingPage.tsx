@@ -11,7 +11,7 @@
  * type and always produces a well-typed ShippingMethodConfig before saving.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
 	Alert,
 	Button,
@@ -34,6 +34,7 @@ import {
 } from "../kit";
 import { EmptyState } from "../ui/EmptyState";
 import type {
+	PickupDetails,
 	ShippingClass,
 	ShippingMethod,
 	ShippingMethodConfig,
@@ -42,6 +43,22 @@ import type {
 } from "../../types";
 import { normalizeShippingShape, type ShippingShape } from "../shipping-shape";
 import { T } from "../theme";
+
+/** Matches the server's limits in `routes/admin-api.ts`. */
+const PICKUP_LIMITS = { location: 300, instructions: 1000, hours: 300 } as const;
+
+const textareaStyle = {
+	border: `1px solid ${T.border}`,
+	borderRadius: 6,
+	padding: "6px 10px",
+	fontSize: "0.95em",
+	width: "100%",
+	boxSizing: "border-box",
+	background: T.inputBg,
+	color: T.inputFg,
+	fontFamily: "inherit",
+	resize: "vertical",
+} as const;
 
 const METHOD_TYPE_LABELS: Record<ShippingMethodType, string> = {
 	flat_rate: "Flat rate",
@@ -704,6 +721,16 @@ function MethodEditor({
 	const [pickupAmount, setPickupAmount] = useState<number | null>(
 		pickupInitial?.amount?.amount ?? 0,
 	);
+	const [pickupLocation, setPickupLocation] = useState(pickupInitial?.pickup?.location ?? "");
+	const [pickupInstructions, setPickupInstructions] = useState(
+		pickupInitial?.pickup?.instructions ?? "",
+	);
+	const [pickupHours, setPickupHours] = useState(pickupInitial?.pickup?.hours ?? "");
+	const pickupIds = {
+		location: useId(),
+		instructions: useId(),
+		hours: useId(),
+	};
 
 	// Weight-based
 	const weightInitial =
@@ -760,11 +787,17 @@ function MethodEditor({
 				};
 			}
 			case "local_pickup": {
-				if (!pickupHasCost) return { type: "local_pickup" };
+				const pickup: PickupDetails = {};
+				if (pickupLocation.trim()) pickup.location = pickupLocation.trim();
+				if (pickupInstructions.trim()) pickup.instructions = pickupInstructions.trim();
+				if (pickupHours.trim()) pickup.hours = pickupHours.trim();
+				const details = Object.keys(pickup).length > 0 ? { pickup } : {};
+				if (!pickupHasCost) return { type: "local_pickup", ...details };
 				if (!pickupCurrency || typeof pickupAmount !== "number") return null;
 				return {
 					type: "local_pickup",
 					amount: { amount: pickupAmount, currency: pickupCurrency },
+					...details,
 				};
 			}
 			case "weight_based": {
@@ -961,6 +994,48 @@ function MethodEditor({
 							</FormField>
 						</>
 					)}
+					<FormField
+						label="Pickup location"
+						htmlFor={pickupIds.location}
+						description="The address shoppers collect from. Shown at checkout and on the order."
+					>
+						<textarea
+							id={pickupIds.location}
+							value={pickupLocation}
+							onChange={(e) => setPickupLocation(e.currentTarget.value)}
+							maxLength={PICKUP_LIMITS.location}
+							rows={2}
+							placeholder="Shop 4, Example Plaza, Moi Avenue, Nairobi"
+							disabled={saving}
+							style={textareaStyle}
+						/>
+					</FormField>
+					<FormField label="Opening hours" htmlFor={pickupIds.hours}>
+						<Input
+							id={pickupIds.hours}
+							value={pickupHours}
+							onChange={(e) => setPickupHours(e.currentTarget.value)}
+							maxLength={PICKUP_LIMITS.hours}
+							placeholder="Mon–Sat, 9am–5pm"
+							disabled={saving}
+						/>
+					</FormField>
+					<FormField
+						label="Directions or instructions"
+						htmlFor={pickupIds.instructions}
+						description="Optional. For example, where to park or who to ask for."
+					>
+						<textarea
+							id={pickupIds.instructions}
+							value={pickupInstructions}
+							onChange={(e) => setPickupInstructions(e.currentTarget.value)}
+							maxLength={PICKUP_LIMITS.instructions}
+							rows={3}
+							placeholder="Ask at the front desk and bring your order number."
+							disabled={saving}
+							style={textareaStyle}
+						/>
+					</FormField>
 				</>
 			)}
 

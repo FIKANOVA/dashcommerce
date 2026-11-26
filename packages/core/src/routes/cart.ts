@@ -767,6 +767,7 @@ export const cartRoutes = {
 					id: chosen.methodId,
 					label: chosen.label,
 					amount: chosen.amount,
+					...(chosen.pickup ? { pickup: chosen.pickup } : {}),
 				},
 			};
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));

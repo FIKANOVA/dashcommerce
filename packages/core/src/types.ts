@@ -164,7 +164,8 @@ export interface CartState {
 	coupons: AppliedCoupon[];
 	shippingAddress?: Address;
 	billingAddress?: Address;
-	shippingMethod?: { id: string; label: string; amount: Money };
+	/** `pickup` is set (possibly empty) when the chosen method is local pickup. */
+	shippingMethod?: { id: string; label: string; amount: Money; pickup?: PickupDetails };
 	taxLines: TaxLine[];
 	subtotal: Money;
 	discountTotal: Money;
@@ -236,6 +237,11 @@ export interface Order {
 	shippingAddress: Address;
 	shippingMethodId?: string;
 	shippingMethodLabel?: string;
+	/**
+	 * Set when the customer chose local pickup: where and when to collect.
+	 * The shipping address is then only the country used to pick the zone.
+	 */
+	pickup?: PickupDetails;
 	subtotal: Money;
 	discountTotal: Money;
 	shippingTotal: Money;
@@ -414,6 +420,19 @@ export interface ShippingZone {
 	updatedAt: IsoDateTime;
 }
 
+/**
+ * What a shopper needs to collect a local pickup order. All plain text,
+ * set by the merchant on the shipping method.
+ */
+export interface PickupDetails {
+	/** Where to collect, e.g. the shop's street address. */
+	location?: string;
+	/** Directions or instructions, e.g. "Ask at the front desk". */
+	instructions?: string;
+	/** Opening hours, e.g. "Mon–Sat 9am–5pm". */
+	hours?: string;
+}
+
 export type ShippingMethodType = "flat_rate" | "free_shipping" | "local_pickup" | "weight_based";
 
 export type ShippingMethodConfig =
@@ -428,7 +447,7 @@ export type ShippingMethodConfig =
 			minimumAmount?: Money;
 			requiresCoupon?: boolean;
 	  }
-	| { type: "local_pickup"; amount?: Money }
+	| { type: "local_pickup"; amount?: Money; pickup?: PickupDetails }
 	| {
 			type: "weight_based";
 			currency: CurrencyCode;
@@ -459,6 +478,8 @@ export interface ShippingRateOption {
 	label: string;
 	amount: Money;
 	deliveryEstimate?: string;
+	/** Set (possibly empty) when the option is local pickup. */
+	pickup?: PickupDetails;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

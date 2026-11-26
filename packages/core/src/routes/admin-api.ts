@@ -17,6 +17,7 @@ import type {
 	Customer,
 	Order,
 	OrderItem,
+	PickupDetails,
 	Refund,
 	Review,
 	ShippingClass,
@@ -933,9 +934,64 @@ function validateShippingMethod(
 		if (input.config === null || typeof input.config !== "object") {
 			return { ok: false, error: "config is required" };
 		}
-		out.config = input.config as ShippingMethodConfig;
+		const config = input.config as ShippingMethodConfig;
+		if (config.type === "local_pickup") {
+			const pickup = validatePickupDetails((config as { pickup?: unknown }).pickup);
+			if (!pickup.ok) return pickup;
+			const { pickup: _raw, ...rest } = config;
+			out.config = {
+				...rest,
+				...(Object.keys(pickup.value).length > 0 ? { pickup: pickup.value } : {}),
+			};
+		} else {
+			out.config = config;
+		}
 	}
 	return { ok: true, value: out };
+}
+
+/** Longest text the merchant can store for each pickup field. */
+export const PICKUP_FIELD_LIMITS = {
+	location: 300,
+	instructions: 1000,
+	hours: 300,
+} as const;
+
+/**
+ * Pickup details are plain text shown to shoppers. Drop markup and control
+ * characters, keep line breaks, trim, and refuse anything over its limit.
+ */
+function plainText(value: string): string {
+	return value
+		.replace(/\r\n?/g, "\n")
+		.replace(/<[^>]*>/g, "")
+		.replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+function validatePickupDetails(
+	raw: unknown,
+): { ok: true; value: PickupDetails } | { ok: false; error: string } {
+	if (raw === undefined || raw === null) return { ok: true, value: {} };
+	if (typeof raw !== "object" || Array.isArray(raw)) {
+		return { ok: false, error: "pickup must be an object" };
+	}
+	const value: PickupDetails = {};
+	for (const field of Object.keys(PICKUP_FIELD_LIMITS) as Array<keyof PickupDetails>) {
+		const v = (raw as Record<string, unknown>)[field];
+		if (v === undefined || v === null) continue;
+		if (typeof v !== "string") return { ok: false, error: `pickup.${field} must be text` };
+		const text = plainText(v);
+		if (text.length > PICKUP_FIELD_LIMITS[field]) {
+			return {
+				ok: false,
+				error: `pickup.${field} must be ${PICKUP_FIELD_LIMITS[field]} characters or fewer`,
+			};
+		}
+		if (text) value[field] = text;
+	}
+	return { ok: true, value };
 }
 
 async function postShippingMethod(

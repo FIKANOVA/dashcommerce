@@ -28,21 +28,42 @@ export interface ComposedEmail {
 	html: string;
 }
 
+/** The pickup lines to show, or null when the order is delivered. */
+function pickupRows(order: Order): Array<{ label: string; value: string }> | null {
+	if (!order.pickup) return null;
+	const rows: Array<{ label: string; value: string }> = [];
+	if (order.pickup.location) rows.push({ label: "Collect from", value: order.pickup.location });
+	if (order.pickup.hours) rows.push({ label: "Opening hours", value: order.pickup.hours });
+	if (order.pickup.instructions) rows.push({ label: "Directions", value: order.pickup.instructions });
+	return rows;
+}
+
 export function composeOrderReceipt(input: ComposeReceiptInput): ComposedEmail {
 	const { order, items, siteName, viewOrderUrl } = input;
 
 	const subject = `Your order ${order.orderNumber} from ${siteName}`;
+	const pickup = pickupRows(order);
+	const nextStep = pickup
+		? "Bring your order number when you collect."
+		: "we'll email again when it ships.";
 
 	const textLines = [
 		greet(order.billingAddress.firstName),
 		"",
-		"Thanks for your order. Payment received — we'll email again when it ships.",
+		`Thanks for your order. Payment received — ${nextStep}`,
 		"",
 		`Order: ${order.orderNumber}`,
 		...items.map(
 			(it) => `  ${it.quantity} × ${it.name} — ${formatMoney(it.total)}`,
 		),
 		"",
+		...(pickup
+			? [
+					`Pickup${order.shippingMethodLabel ? ` (${order.shippingMethodLabel})` : ""}`,
+					...pickup.map((row) => `  ${row.label}: ${row.value.replace(/\n/g, "\n    ")}`),
+					"",
+				]
+			: []),
 		`Subtotal: ${formatMoney(order.subtotal)}`,
 	];
 	if (order.discountTotal.amount > 0) {
@@ -93,6 +114,18 @@ export function composeOrderReceipt(input: ComposeReceiptInput): ComposedEmail {
 		`<tr class="grand"><td>Total</td><td class="amt">${escapeHtml(formatMoney(order.total))}</td></tr>`,
 	);
 
+	const pickupHtml = pickup
+		? `
+	<h2>Pickup${order.shippingMethodLabel ? ` · ${escapeHtml(order.shippingMethodLabel)}` : ""}</h2>
+	<table class="totals" role="presentation">${pickup
+		.map(
+			(row) =>
+				`<tr><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.value).replace(/\n/g, "<br>")}</td></tr>`,
+		)
+		.join("")}</table>
+`
+		: "";
+
 	const button = viewOrderUrl
 		? `<p style="margin-top:20px;"><a class="btn" href="${escapeHtml(viewOrderUrl)}">View order</a></p>`
 		: "";
@@ -100,11 +133,11 @@ export function composeOrderReceipt(input: ComposeReceiptInput): ComposedEmail {
 	const body = `
 	<h1>Order ${escapeHtml(order.orderNumber)} confirmed</h1>
 	<p>${escapeHtml(greet(order.billingAddress.firstName))}</p>
-	<p>Thanks for your order. Your payment of <strong>${escapeHtml(formatMoney(order.total))}</strong> has been received — we'll email again when it ships.</p>
+	<p>Thanks for your order. Your payment of <strong>${escapeHtml(formatMoney(order.total))}</strong> has been received — ${escapeHtml(nextStep)}</p>
 
 	<h2>Items</h2>
 	<table class="lines" role="presentation">${itemsRows}</table>
-
+${pickupHtml}
 	<h2>Summary</h2>
 	<table class="totals" role="presentation">${totalRows.join("")}</table>
 ${button}

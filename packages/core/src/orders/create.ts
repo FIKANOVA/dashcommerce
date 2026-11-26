@@ -306,11 +306,15 @@ export async function createOrderFromPaymentIntent(
 		});
 	}
 
-	if (!cart.billingAddress || !cart.shippingAddress) {
+	// A pickup order has nothing to deliver, so one address is enough.
+	const pickup = cart.shippingMethod?.pickup;
+	const shippingAddress = cart.shippingAddress ?? (pickup ? cart.billingAddress : undefined);
+	const billingAddress = cart.billingAddress ?? (pickup ? cart.shippingAddress : undefined);
+	if (!billingAddress || !shippingAddress) {
 		throw new Error("Cart snapshot is missing billing or shipping address — cannot create order.");
 	}
 
-	const customerEmail = cart.customerEmail ?? pi.receipt_email ?? cart.billingAddress.firstName;
+	const customerEmail = cart.customerEmail ?? pi.receipt_email ?? billingAddress.firstName;
 	if (!customerEmail || !customerEmail.includes("@")) {
 		throw new Error("Cart snapshot is missing a valid customer email.");
 	}
@@ -318,9 +322,9 @@ export async function createOrderFromPaymentIntent(
 	// (2) Upsert customer.
 	const customer = await upsertCustomer(ctx, {
 		email: customerEmail.toLowerCase(),
-		firstName: cart.billingAddress.firstName,
-		lastName: cart.billingAddress.lastName,
-		phone: cart.billingAddress.phone,
+		firstName: billingAddress.firstName,
+		lastName: billingAddress.lastName,
+		phone: billingAddress.phone,
 		currency: cart.currency,
 		orderTotalMinor: cart.total.amount,
 		...(pi.customer ? { stripeCustomerId: pi.customer } : {}),
@@ -363,10 +367,11 @@ export async function createOrderFromPaymentIntent(
 		customerId: customer.id,
 		customerEmail: customer.email,
 		currency: cart.currency,
-		billingAddress: cart.billingAddress,
-		shippingAddress: cart.shippingAddress,
+		billingAddress,
+		shippingAddress,
 		...(cart.shippingMethod ? { shippingMethodId: cart.shippingMethod.id } : {}),
 		...(cart.shippingMethod ? { shippingMethodLabel: cart.shippingMethod.label } : {}),
+		...(pickup ? { pickup } : {}),
 		subtotal: cart.subtotal,
 		discountTotal: cart.discountTotal,
 		shippingTotal: cart.shippingTotal,

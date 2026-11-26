@@ -10,6 +10,7 @@ import { add, money, zero, type Money } from "../money";
 import type {
 	Address,
 	CartLineItem,
+	PickupDetails,
 	ShippingMethod,
 	ShippingRateOption,
 	ShippingZone,
@@ -50,6 +51,15 @@ function cartWeightGrams(items: CartLineItem[]): number {
 	return total;
 }
 
+/** Copy only the pickup fields that hold text, so an empty method gives `{}`. */
+export function pickupDetails(raw: PickupDetails | undefined): PickupDetails {
+	const out: PickupDetails = {};
+	if (raw?.location) out.location = raw.location;
+	if (raw?.instructions) out.instructions = raw.instructions;
+	if (raw?.hours) out.hours = raw.hours;
+	return out;
+}
+
 export interface CalculateRatesInput {
 	items: CartLineItem[];
 	currency: string;
@@ -75,6 +85,7 @@ export function calculateRates(input: CalculateRatesInput): ShippingRateOption[]
 				methodId: method.id,
 				label: method.title,
 				amount: zero(input.currency),
+				...(cfg.type === "local_pickup" ? { pickup: pickupDetails(cfg.pickup) } : {}),
 			});
 			continue;
 		}
@@ -103,6 +114,7 @@ export function calculateRates(input: CalculateRatesInput): ShippingRateOption[]
 				methodId: method.id,
 				label: method.title,
 				amount: cfg.amount ?? zero(input.currency),
+				pickup: pickupDetails(cfg.pickup),
 			});
 		} else if (cfg.type === "weight_based") {
 			if (cfg.currency !== input.currency || !inCartCurrency(cfg.base)) continue;
