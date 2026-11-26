@@ -1,78 +1,110 @@
 /**
  * CheckoutFormIsland — Stripe Elements checkout.
  *
- * Flow:
+ * The amount is fixed when the customer presses Pay, as with every other
+ * payment provider (Stripe's deferred-intent flow):
  *   1. Wait until the cart has `customerEmail` + `shippingAddress` set
  *      (the contact form on /checkout saves those, then dispatches
- *      `dashcommerce:cart-updated`). This keeps us from firing
- *      /checkout/create-intent before the customer has entered details
- *      — which previously surfaced a stale "customerEmail is required"
- *      error in the payment step.
- *   2. POST /checkout/create-intent → { clientSecret, orderDraftId }.
- *   3. Render <Elements> with the clientSecret.
- *   4. On submit, call stripe.confirmPayment with
- *      return_url = returnUrl with "{orderDraftId}" substituted.
- *   5. Stripe handles 3DS + redirects the customer back to the
- *      thank-you page, which polls /orders/by-draft/:id.
+ *      `dashcommerce:cart-updated`).
+ *   2. Render <Elements> in `mode: "payment"` with the cart's current
+ *      amount and currency. No PaymentIntent exists yet. The amount follows
+ *      the cart: a coupon or shipping change at checkout updates it.
+ *   3. On Pay: `elements.submit()` validates the card form, then
+ *      POST /checkout/create-intent with the total the customer saw. The
+ *      server re-prices the cart and, if that total still stands, creates
+ *      the PaymentIntent and holds the stock; otherwise it answers 409 with
+ *      the new total for the customer to check. Every press of Pay gets a
+ *      fresh intent and hold, so a retry after a decline is held again.
+ *   4. `stripe.confirmPayment` with that client secret; Stripe handles 3DS
+ *      and returns the customer to `returnUrl` with "{orderDraftId}"
+ *      substituted, where the thank-you page polls for the order.
  *
  * Peer-optional: @stripe/react-stripe-js + @stripe/stripe-js are lazy-
  * imported inside the island so sites that don't use DashCommerce
  * checkout don't need to install them.
  */
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 export interface CheckoutFormIslandProps {
 	publishableKey: string;
 	returnUrl: string;
 }
 
-interface IntentResponse {
+interface Money {
+	amount: number;
+	currency: string;
+}
+
+/** The parts of the cart the payment form reads. */
+export interface PayableCart {
+	customerEmail?: string;
+	shippingAddress?: unknown;
+	total: Money;
+	currency: string;
+	updatedAt?: string;
+}
+
+/** A PaymentIntent created by checkout/create-intent. */
+export interface CreatedIntent {
 	clientSecret: string;
 	orderDraftId: string;
 	paymentIntentId: string;
+	total: Money;
+	currency: string;
 }
 
-interface CartContactSnapshot {
-	customerEmail?: string;
-	shippingAddress?: unknown;
+const API = "/_emdash/api/plugins/dashcommerce";
+
+/** The contact step is done: the cart has an email and a ship-to address. */
+export function cartReadyForPayment(cart: Partial<PayableCart> | undefined): boolean {
+	return Boolean(cart?.customerEmail?.includes("@") && cart.shippingAddress);
 }
 
-async function fetchCartReady(): Promise<boolean> {
+/** Options for Stripe Elements before any PaymentIntent exists. */
+export function deferredElementsOptions(cart: PayableCart): {
+	mode: "payment";
+	amount: number;
+	currency: string;
+} {
+	return { mode: "payment", amount: cart.total.amount, currency: cart.currency.toLowerCase() };
+}
+
+function formatMoney(m: Money): string {
 	try {
-		const res = await fetch("/_emdash/api/plugins/dashcommerce/cart", {
-			credentials: "include",
-		});
-		if (!res.ok) return false;
-		const body = (await res.json()) as { cart?: CartContactSnapshot };
-		const cart = body.cart ?? {};
-		return Boolean(
-			cart.customerEmail &&
-				cart.customerEmail.includes("@") &&
-				cart.shippingAddress,
+		return new Intl.NumberFormat(undefined, { style: "currency", currency: m.currency }).format(
+			m.amount / 100,
 		);
 	} catch {
-		return false;
+		return `${m.currency} ${(m.amount / 100).toFixed(2)}`;
 	}
 }
 
-export default function CheckoutFormIsland({
-	publishableKey,
-	returnUrl,
-}: CheckoutFormIslandProps) {
-	const [intent, setIntent] = useState<IntentResponse | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const [stripeModule, setStripeModule] =
-		useState<typeof import("@stripe/react-stripe-js") | null>(null);
-	const [stripePromise, setStripePromise] = useState<
-		ReturnType<typeof import("@stripe/stripe-js").loadStripe> | null
-	>(null);
-	const startedRef = useRef(false);
+async function fetchCart(): Promise<PayableCart | null> {
+	try {
+		const res = await fetch(`${API}/cart`, { credentials: "include" });
+		if (!res.ok) return null;
+		const body = (await res.json()) as { cart?: PayableCart };
+		return body.cart ?? null;
+	} catch {
+		return null;
+	}
+}
 
-	const start = useCallback(async () => {
-		if (startedRef.current) return;
-		startedRef.current = true;
-		setError(null);
+export default function CheckoutFormIsland({ publishableKey, returnUrl }: CheckoutFormIslandProps) {
+	const [cart, setCart] = useState<PayableCart | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [stripeModule, setStripeModule] = useState<typeof import("@stripe/react-stripe-js") | null>(
+		null,
+	);
+	const [stripePromise, setStripePromise] = useState<ReturnType<
+		typeof import("@stripe/stripe-js").loadStripe
+	> | null>(null);
+	const loadingRef = useRef(false);
+
+	const loadStripe = useCallback(async () => {
+		if (loadingRef.current) return;
+		loadingRef.current = true;
 		try {
 			const [reactStripe, stripeJs] = await Promise.all([
 				import("@stripe/react-stripe-js"),
@@ -80,105 +112,130 @@ export default function CheckoutFormIsland({
 			]);
 			setStripeModule(reactStripe);
 			setStripePromise(stripeJs.loadStripe(publishableKey));
-			const res = await fetch(
-				"/_emdash/api/plugins/dashcommerce/checkout/create-intent",
-				{
-					method: "POST",
-					credentials: "include",
-					headers: { "Content-Type": "application/json" },
-					body: "{}",
-				},
-			);
-			const body = (await res.json()) as IntentResponse | { error?: string };
-			if (!res.ok) {
-				// Let the customer retry once they fix whatever's missing.
-				startedRef.current = false;
-				setError(("error" in body && body.error) || "Could not start checkout");
-				return;
-			}
-			setIntent(body as IntentResponse);
 		} catch (err) {
-			startedRef.current = false;
-			setError(err instanceof Error ? err.message : "Could not start checkout");
+			loadingRef.current = false;
+			setError(err instanceof Error ? err.message : "Could not load the payment form");
 		}
 	}, [publishableKey]);
 
+	// Follow the cart: show the form once the contact step is done, and
+	// keep its amount in step with coupon or shipping changes.
 	useEffect(() => {
 		let cancelled = false;
-
-		async function maybeStart() {
-			if (startedRef.current || cancelled) return;
-			const ready = await fetchCartReady();
-			if (ready && !cancelled) void start();
+		async function refresh() {
+			const next = await fetchCart();
+			if (cancelled || !next) return;
+			if (!cartReadyForPayment(next)) return;
+			setCart(next);
+			void loadStripe();
 		}
-
-		void maybeStart();
-
+		void refresh();
 		const onCartUpdated = () => {
-			void maybeStart();
+			void refresh();
 		};
 		window.addEventListener("dashcommerce:cart-updated", onCartUpdated);
 		return () => {
 			cancelled = true;
 			window.removeEventListener("dashcommerce:cart-updated", onCartUpdated);
 		};
-	}, [start]);
+	}, [loadStripe]);
 
 	if (error) return <div role="alert">Checkout unavailable: {error}</div>;
-	if (!intent || !stripeModule || !stripePromise) {
-		return <div>Loading checkout…</div>;
-	}
+	if (!cart || !stripeModule || !stripePromise) return <div>Loading checkout…</div>;
+	if (cart.total.amount <= 0) return <div role="alert">There's nothing to pay on this order.</div>;
 
 	const { Elements } = stripeModule;
-	const finalReturnUrl = returnUrl.replace("{orderDraftId}", intent.orderDraftId);
-
 	return (
-		<Elements
-			stripe={stripePromise}
-			options={{ clientSecret: intent.clientSecret }}
-		>
-			<InnerForm returnUrl={finalReturnUrl} stripeModule={stripeModule} />
+		<Elements stripe={stripePromise} options={deferredElementsOptions(cart)}>
+			<InnerForm cart={cart} returnUrl={returnUrl} stripeModule={stripeModule} onCart={setCart} />
 		</Elements>
 	);
 }
 
 function InnerForm({
+	cart,
 	returnUrl,
 	stripeModule,
+	onCart,
 }: {
+	cart: PayableCart;
 	returnUrl: string;
 	stripeModule: typeof import("@stripe/react-stripe-js");
+	onCart: (cart: PayableCart) => void;
 }) {
 	const { PaymentElement, useStripe, useElements } = stripeModule;
 	const stripe = useStripe();
 	const elements = useElements();
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// <Elements options> keeps the card form's amount in step with `cart`.
+
+	async function createIntent(shown: Money): Promise<CreatedIntent | null> {
+		const res = await fetch(`${API}/checkout/create-intent`, {
+			method: "POST",
+			credentials: "include",
+			headers: { "Content-Type": "application/json" },
+			// The server refuses if its re-priced total differs from what the
+			// customer saw, so they're never charged an amount they didn't see.
+			body: JSON.stringify({ expectedTotal: shown }),
+		});
+		const body = (await res.json().catch(() => ({}))) as Partial<CreatedIntent> & {
+			error?: unknown;
+			code?: string;
+			cart?: PayableCart;
+		};
+		if (res.status === 409 && body.code === "cart_totals_changed" && body.cart) {
+			// The server re-priced the cart: show the new total and let the
+			// customer confirm it before paying.
+			onCart(body.cart);
+			window.dispatchEvent(
+				new CustomEvent("dashcommerce:cart-updated", { detail: { silent: true } }),
+			);
+			setError(
+				`Your total is now ${formatMoney(body.cart.total)}. Check your order, then press Pay again.`,
+			);
+			return null;
+		}
+		if (!res.ok || !body.clientSecret || !body.orderDraftId) {
+			setError(
+				typeof body.error === "string" && body.error ? body.error : "Payment couldn't start.",
+			);
+			return null;
+		}
+		return body as CreatedIntent;
+	}
 
 	async function onSubmit(e: FormEvent) {
 		e.preventDefault();
 		if (!stripe || !elements) return;
 		setSubmitting(true);
 		setError(null);
-		const { error } = await stripe.confirmPayment({
-			elements,
-			confirmParams: { return_url: returnUrl },
-		});
-		if (error) {
-			setError(error.message ?? "Payment failed");
+		try {
+			const { error: submitError } = await elements.submit();
+			if (submitError) {
+				setError(submitError.message ?? "Check your payment details.");
+				return;
+			}
+			const intent = await createIntent(cart.total);
+			if (!intent) return;
+			const { error: confirmError } = await stripe.confirmPayment({
+				elements,
+				clientSecret: intent.clientSecret,
+				confirmParams: { return_url: returnUrl.replace("{orderDraftId}", intent.orderDraftId) },
+			});
+			if (confirmError) setError(confirmError.message ?? "Payment failed");
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Payment failed");
+		} finally {
+			setSubmitting(false);
 		}
-		setSubmitting(false);
 	}
 
 	return (
 		<form onSubmit={onSubmit} className="dc-checkout-form">
 			<PaymentElement />
-			<button
-				type="submit"
-				className="dc-checkout-form__submit"
-				disabled={!stripe || submitting}
-			>
-				{submitting ? "Processing…" : "Pay now"}
+			<button type="submit" className="dc-checkout-form__submit" disabled={!stripe || submitting}>
+				{submitting ? "Processing…" : `Pay ${formatMoney(cart.total)}`}
 			</button>
 			{error && (
 				<p role="alert" className="dc-checkout-form__error">

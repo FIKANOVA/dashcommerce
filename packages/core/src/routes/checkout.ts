@@ -17,7 +17,7 @@
 
 import type { PluginContext, RouteContext } from "emdash";
 import { type PricingPolicy, recalculate } from "../cart/calculate";
-import { createLock, newLock, sumActiveLocksForProduct } from "../cart/lock";
+import { holdStock, sumActiveLocksForProduct } from "../cart/lock";
 import { getCart, save } from "../cart/store";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { money, zero } from "../money";
@@ -152,6 +152,7 @@ async function repriceAndCheckStock(ctx: PluginContext, cart: CartState): Promis
 				ctx,
 				line.productId,
 				line.variantId ?? undefined,
+				{ excludeSessionId: cart.sessionId },
 			);
 			const available = onHand - locked;
 			if (line.quantity > available && fields.backorders === "no") {
@@ -221,6 +222,8 @@ export const checkoutRoutes = {
 			const input = (routeCtx.input ?? {}) as {
 				customerEmail?: string;
 				notes?: string;
+				/** The total the customer saw when they pressed Pay. */
+				expectedTotal?: { amount?: unknown; currency?: unknown };
 			};
 
 			const { sessionId } = resolveSessionId(routeCtx.request);
@@ -283,7 +286,14 @@ export const checkoutRoutes = {
 
 			const policy = await readPricingPolicy(ctx);
 			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
-			if (totalsChanged(withContact, recalculated)) {
+			// Never charge a total the customer didn't see: the stored cart
+			// may have changed (another tab) since the payment form showed it.
+			const expected = input.expectedTotal;
+			const differsFromShown =
+				expected !== undefined &&
+				(expected.amount !== recalculated.total.amount ||
+					expected.currency !== recalculated.total.currency);
+			if (totalsChanged(withContact, recalculated) || differsFromShown) {
 				await save(ctx, recalculated);
 				return new Response(
 					JSON.stringify({
@@ -304,13 +314,8 @@ export const checkoutRoutes = {
 
 			const orderDraftId = randomId();
 
-			// Stock soft-lock.
-			if (stockEntries.length > 0) {
-				await createLock(
-					ctx,
-					newLock(orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS }),
-				);
-			}
+			// Stock soft-lock (replaces this shopper's earlier hold).
+			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS });
 
 			// Snapshot for webhook replay.
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
@@ -561,12 +566,7 @@ export const checkoutRoutes = {
 
 			const orderDraftId = randomId();
 
-			if (stockEntries.length > 0) {
-				await createLock(
-					ctx,
-					newLock(orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS }),
-				);
-			}
+			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS });
 
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
 				cart: recalculated,

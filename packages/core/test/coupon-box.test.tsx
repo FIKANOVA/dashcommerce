@@ -82,7 +82,7 @@ describe("coupon entry on the storefront", () => {
 		expect(src).toMatch(/<CouponBox<CartState>\s/);
 	});
 
-	it("the checkout summary can turn the box off, and the starter does for Stripe Elements", () => {
+	it("the checkout summary can turn the box off; the starter keeps it on for every checkout", () => {
 		const src = islandSource("CheckoutSidebarIsland.tsx");
 		expect(src).toContain("couponEntry = true,");
 		expect(src).toContain("{couponEntry && (");
@@ -95,6 +95,7 @@ describe("coupon entry on the storefront", () => {
 			fileURLToPath(new URL("../../starter/src/pages/checkout.astro", import.meta.url)),
 			"utf8",
 		);
-		expect(starter).toMatch(/<CheckoutSidebar\b[^>]*\bcouponEntry=\{!useStripeElements\}/);
+		// Every checkout fixes the amount on Pay, so the starter keeps the box everywhere.
+		expect(starter).not.toMatch(/<CheckoutSidebar\b[^>]*\bcouponEntry=/);
 	});
 });

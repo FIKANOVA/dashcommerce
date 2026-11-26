@@ -107,6 +107,11 @@ export function makeRouteContext(
 			async delete(key: string) {
 				kvStore.delete(key);
 			},
+			async list(prefix = "") {
+				return [...kvStore.entries()]
+					.filter(([key]) => key.startsWith(prefix))
+					.map(([key, value]) => ({ key, value }));
+			},
 		},
 		storage,
 		content: {
