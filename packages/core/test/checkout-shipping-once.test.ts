@@ -60,7 +60,7 @@ describe("wiring", () => {
 			"shippingPicker={shippingPicker}",
 		);
 		expect(read("../../starter/src/pages/checkout.astro")).toMatch(
-			/<CheckoutSidebar[^>]*shippingPicker=\{useStripeElements\}/,
+			/<CheckoutSidebar\b[^>]*\bshippingPicker=\{useStripeElements\}/,
 		);
 	});
 });
