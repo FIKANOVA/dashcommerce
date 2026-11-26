@@ -52,6 +52,7 @@ function json(body: unknown, status = 200): Response {
  * So the response carries only what the thank-you page renders: no
  * addresses, Stripe ids, IP, user agent, metadata or vendor splits.
  * The email is masked; the full address is in the receipt email.
+ * Pickup details are the shop's own, so they are safe to show.
  */
 export interface PublicOrderSummary {
 	id: string;
@@ -60,6 +61,10 @@ export interface PublicOrderSummary {
 	customerEmail: string;
 	currency: Order["currency"];
 	total: Order["total"];
+	/** Set for local pickup orders: where and when to collect. */
+	pickup?: Order["pickup"];
+	/** The chosen shipping method's title, e.g. "Store pickup". */
+	shippingMethodLabel?: string;
 }
 
 export interface PublicOrderItem {
@@ -85,6 +90,10 @@ export function toPublicOrder(order: Order): PublicOrderSummary {
 		customerEmail: maskEmail(order.customerEmail),
 		currency: order.currency,
 		total: order.total,
+		...(order.pickup ? { pickup: order.pickup } : {}),
+		...(order.pickup && order.shippingMethodLabel
+			? { shippingMethodLabel: order.shippingMethodLabel }
+			: {}),
 	};
 }
 

@@ -17,6 +17,7 @@
  *   payment_intent.payment_failed / canceled → release stock lock
  *   charge.refunded           → recordRefundFromWebhook (idempotent dedup)
  *   refund.updated            → status update on refund row
+ *   charge.dispute.*          → applyDisputeUpdate (record, alert, count a loss)
  *   customer.subscription.*   → phase 7 (no-op here)
  *   invoice.*                 → phase 7 (no-op here)
  *
@@ -30,7 +31,12 @@ import { deleteLock, getLock } from "../cart/lock";
 import { clear as clearCart } from "../cart/store";
 import { sendSubscriptionRenewed, sendVendorActivated, sendVendorPayout } from "../emails";
 import { money } from "../money";
-import { createOrderFromPaymentIntent, findOrderByPaymentIntent } from "../orders/create";
+import {
+	createOrderFromPaymentIntent,
+	findOrderByPaymentIntent,
+	loadOrderItems,
+} from "../orders/create";
+import { type DisputeEvent, applyDisputeUpdate } from "../orders/dispute";
 import { applyProviderRefundUpdate, recordRefundFromWebhook } from "../orders/refund";
 import {
 	type NormalizedPaymentEvent,
@@ -54,6 +60,13 @@ import {
 	upsertInvoiceFromStripe,
 } from "../subscriptions/create";
 import { handleInvoicePaymentFailed } from "../subscriptions/dunning";
+import {
+	addSubscriptionInterval,
+	findProviderSubscription,
+	providerSubsStore,
+	recordProviderSubscriptionInvoice,
+	upsertProviderSubscription,
+} from "../subscriptions/provider";
 import type { CartState, StripeEventRecord } from "../types";
 import type {
 	Address,
@@ -736,6 +749,93 @@ async function handleNormalizedChargeSucceeded(
 		});
 	}
 
+	const provider = requirePaymentProvider(event.providerId);
+	let amount = event.amount;
+	let currency = event.currency;
+	let paymentReference = event.paymentReference;
+	let subscription = event.subscription;
+
+	if (provider.getPaymentStatus) {
+		const creds = await loadPaymentProviderCredentials(ctx.kv, provider.id);
+		if (creds) {
+			let live: Awaited<ReturnType<NonNullable<typeof provider.getPaymentStatus>>>;
+			try {
+				live = await provider.getPaymentStatus(ctx, event.paymentReference, creds);
+			} catch (err) {
+				throw new ConfirmationFailure(
+					`Provider status check failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+			if (live.status !== "succeeded") {
+				ctx.log.error("Provider retrieve did not confirm a succeeded payment", {
+					providerId: provider.id,
+					paymentReference: event.paymentReference,
+					status: live.status,
+					reason: live.reason,
+				});
+				throw new ConfirmationFailure("Payment not succeeded at provider");
+			}
+			if (typeof live.amount === "number") amount = live.amount;
+			if (live.currency) currency = live.currency;
+			if (live.paymentReference) paymentReference = live.paymentReference;
+			subscription = live.subscription ?? subscription;
+		}
+	}
+
+	// A renewal has no checkout draft and must not create a second order.
+	// Record it as a subscription invoice and extend the local period.
+	if (subscription) {
+		const existingSub = await findProviderSubscription(
+			ctx,
+			provider.id,
+			subscription.providerSubscriptionId,
+		);
+		if (existingSub) {
+			// The provider may still report the subscription's old period on a
+			// renewal charge. Extend from the local period, which is the last
+			// period we recorded.
+			const periodStart = existingSub.currentPeriodEnd;
+			const periodEnd = addSubscriptionInterval(
+				periodStart,
+				existingSub.interval,
+				existingSub.intervalCount,
+			);
+			const invoice = await recordProviderSubscriptionInvoice(ctx, {
+				subscription: existingSub,
+				providerId: provider.id,
+				providerInvoiceId: paymentReference,
+				amount,
+				currency: currency.toUpperCase() as CurrencyCode,
+				status: "paid",
+				periodStart,
+				periodEnd,
+			});
+			return new Response(
+				JSON.stringify({
+					received: true,
+					subscriptionId: existingSub.id,
+					invoiceId: invoice.id,
+					renewal: true,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		}
+	}
+
+	// A charge with no draft and no local subscription is not ours (for
+	// example another payment on the same Flutterwave account). Acknowledge
+	// it instead of returning 500 and making the provider retry.
+	if (!event.orderDraftId) {
+		ctx.log.info("Ignoring a charge with no checkout draft and no subscription", {
+			providerId: provider.id,
+			paymentReference: event.paymentReference,
+		});
+		return new Response(JSON.stringify({ received: true, ignored: "no_draft" }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
 	const snapshot = await ctx.kv.get<CheckoutDraftSnapshot>(draftKey(event.orderDraftId));
 	if (!snapshot) {
 		ctx.log.error("No cart snapshot for orderDraftId", {
@@ -770,36 +870,6 @@ async function handleNormalizedChargeSucceeded(
 				status: 500,
 				headers: { "Content-Type": "application/json" },
 			});
-		}
-	}
-
-	let amount = event.amount;
-	let currency = event.currency;
-	let paymentReference = event.paymentReference;
-	const provider = requirePaymentProvider(event.providerId);
-	if (provider.getPaymentStatus) {
-		const creds = await loadPaymentProviderCredentials(ctx.kv, provider.id);
-		if (creds) {
-			let live: Awaited<ReturnType<NonNullable<typeof provider.getPaymentStatus>>>;
-			try {
-				live = await provider.getPaymentStatus(ctx, event.paymentReference, creds);
-			} catch (err) {
-				throw new ConfirmationFailure(
-					`Provider status check failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-			if (live.status !== "succeeded") {
-				ctx.log.error("Provider retrieve did not confirm a succeeded payment", {
-					providerId: provider.id,
-					paymentReference: event.paymentReference,
-					status: live.status,
-					reason: live.reason,
-				});
-				throw new ConfirmationFailure("Payment not succeeded at provider");
-			}
-			if (typeof live.amount === "number") amount = live.amount;
-			if (live.currency) currency = live.currency;
-			if (live.paymentReference) paymentReference = live.paymentReference;
 		}
 	}
 
@@ -844,6 +914,60 @@ async function handleNormalizedChargeSucceeded(
 		}
 	}
 
+	// The first subscription payment also creates the local subscription.
+	// A failure here must not fail the order: the payment is captured.
+	if (subscription) {
+		try {
+			const items = await loadOrderItems(ctx, order.id);
+			const item = items.find((row) => row.subscriptionConfig);
+			const config = item?.subscriptionConfig;
+			if (!item || !config) {
+				ctx.log.warn("Subscription charge created an order with no subscription item", {
+					orderId: order.id,
+					providerId: provider.id,
+					providerSubscriptionId: subscription.providerSubscriptionId,
+				});
+			} else {
+				const periodStart =
+					subscription.currentPeriodStart ?? order.paidAt ?? new Date().toISOString();
+				const periodEnd =
+					subscription.currentPeriodEnd ??
+					addSubscriptionInterval(periodStart, config.interval, config.intervalCount);
+				const local = await upsertProviderSubscription(ctx, {
+					providerId: provider.id,
+					providerSubscriptionId: subscription.providerSubscriptionId,
+					customerId: order.customerId,
+					productId: item.productId,
+					...(item.variantId ? { variantId: item.variantId } : {}),
+					status: subscription.status ?? "active",
+					currency: order.currency,
+					unitAmount: item.unitPrice.amount,
+					quantity: item.quantity,
+					interval: config.interval,
+					intervalCount: config.intervalCount,
+					currentPeriodStart: periodStart,
+					currentPeriodEnd: periodEnd,
+					...(subscription.trialEndsAt ? { trialEndsAt: subscription.trialEndsAt } : {}),
+					cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? false,
+					...(subscription.canceledAt ? { canceledAt: subscription.canceledAt } : {}),
+				});
+				const subscriptionIds = [...new Set([...(order.subscriptionIds ?? []), local.id])];
+				await ordersStore(ctx).put(order.id, {
+					...order,
+					subscriptionIds,
+					updatedAt: new Date().toISOString(),
+				});
+			}
+		} catch (err) {
+			ctx.log.error("Could not record the provider subscription", {
+				orderId: order.id,
+				providerId: provider.id,
+				providerSubscriptionId: subscription.providerSubscriptionId,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
 	return new Response(
 		JSON.stringify({ received: true, orderId: order.id, orderNumber: order.orderNumber }),
 		{ status: 200, headers: { "Content-Type": "application/json" } },
@@ -862,6 +986,28 @@ async function handleNormalizedChargeFailed(
 		status: 200,
 		headers: { "Content-Type": "application/json" },
 	});
+}
+
+async function handleDisputeEvent(
+	ctx: PluginContext,
+	provider: PaymentProvider,
+	event: DisputeEvent,
+): Promise<Response> {
+	if (event.providerId !== provider.id) {
+		return new Response(JSON.stringify({ error: "Dispute event from another provider" }), {
+			status: 400,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+	const outcome = await applyDisputeUpdate(ctx, event);
+	return new Response(
+		JSON.stringify({
+			received: true,
+			dispute: outcome,
+			...(outcome === "unknown" ? { orphan: true } : {}),
+		}),
+		{ status: 200, headers: { "Content-Type": "application/json" } },
+	);
 }
 
 export const webhookRoutes = {
@@ -978,6 +1124,44 @@ export const webhookRoutes = {
 					if (normalized.type === "charge.failed") {
 						return await handleNormalizedChargeFailed(ctx, normalized);
 					}
+					if (normalized.type === "subscription.updated") {
+						if (normalized.providerId !== provider.id) {
+							return new Response(
+								JSON.stringify({ error: "Subscription event from another provider" }),
+								{ status: 400, headers: { "Content-Type": "application/json" } },
+							);
+						}
+						const sub = await findProviderSubscription(
+							ctx,
+							provider.id,
+							normalized.providerSubscriptionId,
+						);
+						if (!sub) {
+							return new Response(JSON.stringify({ received: true, orphan: true }), {
+								status: 200,
+								headers: { "Content-Type": "application/json" },
+							});
+						}
+						await providerSubsStore(ctx).put(sub.id, {
+							...sub,
+							status: normalized.status,
+							...(normalized.currentPeriodStart
+								? { currentPeriodStart: normalized.currentPeriodStart }
+								: {}),
+							...(normalized.currentPeriodEnd
+								? { currentPeriodEnd: normalized.currentPeriodEnd }
+								: {}),
+							...(normalized.cancelAtPeriodEnd !== undefined
+								? { cancelAtPeriodEnd: normalized.cancelAtPeriodEnd }
+								: {}),
+							...(normalized.canceledAt ? { canceledAt: normalized.canceledAt } : {}),
+							updatedAt: new Date().toISOString(),
+						});
+						return new Response(JSON.stringify({ received: true, subscriptionId: sub.id }), {
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						});
+					}
 					if (normalized.type === "refund.updated") {
 						if (normalized.providerId !== provider.id) {
 							return new Response(JSON.stringify({ error: "Refund event from another provider" }), {
@@ -998,6 +1182,9 @@ export const webhookRoutes = {
 							}),
 							{ status: 200, headers: { "Content-Type": "application/json" } },
 						);
+					}
+					if (normalized.type === "dispute.updated") {
+						return await handleDisputeEvent(ctx, provider, normalized);
 					}
 					return new Response(
 						JSON.stringify({
@@ -1060,6 +1247,16 @@ export const webhookRoutes = {
 						);
 					case "charge.refunded":
 						return await handleChargeRefunded(ctx, event.data.object as StripeCharge);
+					case "charge.dispute.created":
+					case "charge.dispute.updated":
+					case "charge.dispute.closed":
+						if (normalized.type === "dispute.updated") {
+							return await handleDisputeEvent(ctx, provider, normalized);
+						}
+						return new Response(
+							JSON.stringify({ received: true, type: event.type, skipped: true }),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
 					case "customer.subscription.created":
 					case "customer.subscription.updated":
 					case "customer.subscription.resumed":

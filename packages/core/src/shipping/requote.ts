@@ -33,6 +33,7 @@ export function requoteShippingMethod(
 			id: chosen.methodId,
 			label: chosen.label,
 			amount: chosen.amount,
+			...(chosen.pickup ? { pickup: chosen.pickup } : {}),
 		},
 	};
 }

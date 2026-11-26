@@ -1,0 +1,5 @@
+---
+"@dashcommerce/core": minor
+---
+
+Let hosted checkout use shipping zones that name regions. Zones could already list regions within a country (a Nairobi City zone next to a Kenya-wide one), but hosted checkout only sent the country, so a region rate never applied. When a zone names regions in the chosen country, `HostedCheckoutForm` now asks for the region, offering those regions by name plus "Elsewhere", and sends it to `cart/shipping-location`, which takes a new optional `region`. A new public `cart/shipping-regions` route lists the regions the zones name, by country. Regions are the ISO 3166-2 subdivision part (`30` for Nairobi City, `KE-30`). Among matching zones with the same order, one that names the address's region now wins over one that covers the whole country; a lower order still wins first. The admin zone editor can add regions to each country of a zone, chosen by name for Kenya's counties and the US states and typed as codes elsewhere, and editing a zone no longer drops its regions. Shops without regional zones see no change.

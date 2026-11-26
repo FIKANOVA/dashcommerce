@@ -7,7 +7,8 @@
  *   DELETE /cart/item?lineId={id}        — remove
  *   POST   /cart/coupon                  — apply { code }
  *   DELETE /cart/coupon/remove?code={code} — remove
- *   POST   /cart/shipping-location       — minimal ship-to {country, postalCode?} (hosted checkout)
+ *   POST   /cart/shipping-location       — minimal ship-to {country, region?, postalCode?} (hosted checkout)
+ *   GET    /cart/shipping-regions        — regions the shipping zones name, by country (hosted checkout)
  *   POST   /cart/shipping-address        — full address → recalc tax (embedded checkout)
  *   POST   /cart/shipping-methods        — list available rates for current ship-to
  *   POST   /cart/shipping-method         — set method id
@@ -37,7 +38,8 @@ import { verifyRestoreToken } from "../abandoned-cart/recover";
 import { resolveDiscount, validateCoupon } from "../coupons/validate";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { calculateRates } from "../shipping/calculate";
-import { pickZone } from "../shipping/calculate";
+import { pickZone, zoneRegions } from "../shipping/calculate";
+import { regionLabel, regionName } from "../data/regions";
 import type {
 	CartLineItem,
 	CartState,
@@ -593,7 +595,7 @@ export const cartRoutes = {
 
 	/**
 	 * Lightweight "where does this ship to?" endpoint used by the
-	 * hosted-checkout pre-flight form. Accepts just `{country,
+	 * hosted-checkout pre-flight form. Accepts just `{country, region?,
 	 * postalCode?}`, writes a placeholder `shippingAddress` on the cart
 	 * so that zone-picking + rate calc can run before we redirect the
 	 * customer to Stripe's page. The remaining address fields
@@ -604,6 +606,13 @@ export const cartRoutes = {
 	 * region only, and many addresses have no postcode. It is kept when
 	 * given, for tax rates that match on postcode prefixes.
 	 *
+	 * The region is the ISO 3166-2 subdivision part (`30` for Nairobi City,
+	 * `KE-30`), asked for only when a zone names regions in the country
+	 * (see `cart/shipping-regions`). An empty region means "elsewhere": the
+	 * address then matches only zones that cover the whole country. Without
+	 * a `region` field the cart keeps its region if the country is
+	 * unchanged, and drops it if not.
+	 *
 	 * Contrast with `cart/contact`, which requires the full address
 	 * because the embedded-Elements flow has nowhere else to collect
 	 * it.
@@ -613,6 +622,7 @@ export const cartRoutes = {
 		handler: async (routeCtx: RouteContext, ctx: PluginContext) => {
 			const body = (routeCtx.input ?? {}) as {
 				country?: string;
+				region?: unknown;
 				postalCode?: string;
 			};
 			const country = body.country?.trim().toUpperCase();
@@ -620,9 +630,21 @@ export const cartRoutes = {
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
 			}
+			if (
+				body.region !== undefined &&
+				(typeof body.region !== "string" || body.region.trim().length > 64)
+			) {
+				return errorResponse("region must be a short text code", 400);
+			}
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const prior = cart.shippingAddress;
+			const region =
+				typeof body.region === "string"
+					? body.region.trim()
+					: prior?.country === country
+						? (prior.region ?? "")
+						: "";
 			const nextCart: CartState = {
 				...cart,
 				shippingAddress: {
@@ -631,7 +653,7 @@ export const cartRoutes = {
 					line1: prior?.line1 ?? "",
 					...(prior?.line2 ? { line2: prior.line2 } : {}),
 					city: prior?.city ?? "",
-					region: prior?.region ?? "",
+					region,
 					postalCode,
 					country,
 				},
@@ -642,6 +664,42 @@ export const cartRoutes = {
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
 			return cartResponse(saved, setCookie);
+		},
+	},
+
+	/**
+	 * The regions the shipping zones name, by country, with their names:
+	 * `{ countries: { KE: { label: "County", regions: [{ code: "30",
+	 * name: "Nairobi City" }] } } }`. Hosted checkout asks for a region only
+	 * for a country listed here, so shops without regional zones see no
+	 * change.
+	 */
+	"cart/shipping-regions": {
+		public: true,
+		handler: async (_routeCtx: RouteContext, ctx: PluginContext) => {
+			const zonesStore = (
+				ctx.storage as unknown as {
+					shipping_zones: {
+						query(opts: {
+							limit: number;
+						}): Promise<{ items: Array<{ id: string; data: ShippingZone }> }>;
+					};
+				}
+			).shipping_zones;
+			const zones = (await zonesStore.query({ limit: 200 })).items.map((r) => r.data);
+			const countries: Record<
+				string,
+				{ label: string; regions: Array<{ code: string; name: string }> }
+			> = {};
+			for (const [country, codes] of Object.entries(zoneRegions(zones))) {
+				countries[country] = {
+					label: regionLabel(country),
+					regions: codes
+						.map((code) => ({ code, name: regionName(country, code) }))
+						.sort((a, b) => a.name.localeCompare(b.name)),
+				};
+			}
+			return jsonResponse({ countries });
 		},
 	},
 
@@ -767,6 +825,7 @@ export const cartRoutes = {
 					id: chosen.methodId,
 					label: chosen.label,
 					amount: chosen.amount,
+					...(chosen.pickup ? { pickup: chosen.pickup } : {}),
 				},
 			};
 			const updated = recalculate(nextCart, await readPricingPolicy(ctx));

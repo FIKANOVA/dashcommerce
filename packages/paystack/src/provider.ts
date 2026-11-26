@@ -20,6 +20,8 @@ import type {
 	PaymentProviderBank,
 	PaymentProviderCredentials,
 	PaymentProviderRuntimeContext,
+	PaymentStatusResult,
+	ProviderSubscriptionInfo,
 	RefundResult,
 	ResolvePayoutAccountInput,
 	VerifyWebhookInput,
@@ -128,6 +130,11 @@ interface PaystackWebhookEvent {
 			[key: string]: unknown;
 		};
 		gateway_response?: string;
+		/**
+		 * The plan this charge belongs to. An object with `plan_code` on a
+		 * subscription charge; an empty object on other charges.
+		 */
+		plan?: unknown;
 		/** Present when the payment was split: what each party was paid. */
 		split?: {
 			shares?: {
@@ -147,6 +154,9 @@ interface PaystackVerifyData {
 	status: string;
 	gateway_response?: string;
 	channel?: string;
+	/** A plan code, or a plan object, when the charge belongs to a plan. */
+	plan?: unknown;
+	plan_object?: unknown;
 }
 
 interface PaystackRefundData {
@@ -380,6 +390,85 @@ function refundEvent(
 }
 
 /**
+ * Dispute webhooks. Paystack's docs name the events but do not show the
+ * payload, so it is read defensively from the Dispute object's fields and
+ * anything missing leaves the event unhandled rather than guessed.
+ */
+interface PaystackDisputeWebhookData {
+	id?: number | string;
+	status?: string;
+	resolution?: string | null;
+	refund_amount?: number | null;
+	currency?: string;
+	dueAt?: string | null;
+	due_at?: string | null;
+	category?: string;
+	transaction?: { reference?: string; amount?: number; currency?: string };
+}
+
+const DISPUTE_EVENTS = new Set([
+	"charge.dispute.create",
+	"charge.dispute.remind",
+	"charge.dispute.resolve",
+]);
+
+/** `merchant-accepted` means the customer is refunded; `declined` means the shop keeps it. */
+const DISPUTE_RESOLUTION: Record<string, "won" | "lost"> = {
+	"merchant-accepted": "lost",
+	declined: "won",
+};
+
+function disputeEvent(
+	eventName: string,
+	data: PaystackDisputeWebhookData | undefined,
+	raw: unknown,
+): NormalizedPaymentEvent {
+	const unhandled: NormalizedPaymentEvent = {
+		type: "unhandled",
+		providerEventType: eventName,
+		raw,
+	};
+	const id = data?.id;
+	const reference = data?.transaction?.reference;
+	if ((typeof id !== "number" && typeof id !== "string") || String(id) === "" || !reference) {
+		return unhandled;
+	}
+	let status: "open" | "won" | "lost";
+	if (data?.resolution) {
+		const resolved = DISPUTE_RESOLUTION[data.resolution];
+		if (!resolved) return unhandled;
+		status = resolved;
+	} else if (eventName === "charge.dispute.resolve" || data?.status === "resolved") {
+		return unhandled;
+	} else {
+		status = "open";
+	}
+	const amount =
+		typeof data?.refund_amount === "number" && data.refund_amount > 0
+			? data.refund_amount
+			: data?.transaction?.amount;
+	const currency = data?.currency ?? data?.transaction?.currency;
+	if (typeof amount !== "number" || !currency) return unhandled;
+	const dueAt = data?.dueAt ?? data?.due_at;
+	const due = dueAt ? new Date(dueAt) : undefined;
+	return {
+		type: "dispute.updated",
+		providerId: "paystack",
+		// No event id from Paystack: the event name plus dispute id stands in,
+		// as for refunds.
+		providerEventId: `${eventName}:${String(id)}`,
+		providerDisputeId: String(id),
+		paymentReference: reference,
+		status,
+		amount,
+		currency: currency.toUpperCase(),
+		...(data?.category ? { reason: data.category } : {}),
+		...(due && !Number.isNaN(due.getTime()) ? { dueAt: due.toISOString() } : {}),
+		raw,
+	};
+}
+
+/**
  * Core's allocations are exact minor-unit shares, so they become a flat
  * split passed with this one payment: each vendor's subaccount gets its
  * share, and the shop keeps the rest and pays Paystack's fee
@@ -534,6 +623,237 @@ function lastFour(accountNumber: string): string {
 	return `****${accountNumber.slice(-4)}`;
 }
 
+// ── Subscriptions ─────────────────────────────────────────────────────────
+//
+// One Paystack plan per subscription: checkout creates a plan for the cart
+// and initialises the first payment with it. Paystack then charges each
+// renewal itself. The plan code is the provider subscription id core keeps.
+
+type CoreInterval = "day" | "week" | "month" | "year";
+
+/** Paystack's fixed plan intervals, by core interval and count. */
+const PLAN_INTERVALS: Array<{ interval: CoreInterval; count: number; paystack: string }> = [
+	{ interval: "day", count: 1, paystack: "daily" },
+	{ interval: "week", count: 1, paystack: "weekly" },
+	{ interval: "month", count: 1, paystack: "monthly" },
+	{ interval: "month", count: 3, paystack: "quarterly" },
+	{ interval: "month", count: 6, paystack: "biannually" },
+	{ interval: "year", count: 1, paystack: "annually" },
+];
+
+function paystackIntervalFor(interval: CoreInterval, count: number): string | undefined {
+	return PLAN_INTERVALS.find((row) => row.interval === interval && row.count === count)?.paystack;
+}
+
+function coreIntervalFor(
+	paystack: unknown,
+): { interval: CoreInterval; intervalCount: number } | undefined {
+	const row = PLAN_INTERVALS.find((r) => r.paystack === paystack);
+	return row ? { interval: row.interval, intervalCount: row.count } : undefined;
+}
+
+/**
+ * The plan for a subscription checkout, or a clear refusal before Paystack is
+ * called: one subscription line, no free trial, and an interval Paystack has.
+ */
+function planFor(input: InitCheckoutInput): { name: string; interval: string } {
+	const recurring = input.lineItems.filter((line) => line.recurring);
+	const line = recurring[0];
+	if (!line?.recurring || recurring.length > 1) {
+		throw new Error(
+			"Paystack takes one subscription per order. Check out each subscription on its own.",
+		);
+	}
+	if ((input.subscriptionTrialPeriodDays ?? 0) > 0) {
+		throw new Error(
+			"Paystack subscriptions can't start with a free trial. Remove the trial to sell this product with Paystack.",
+		);
+	}
+	if (input.allocations && input.allocations.length > 0) {
+		throw new Error("Paystack subscriptions can't be split between vendors.");
+	}
+	const { interval, intervalCount } = line.recurring;
+	const paystack = paystackIntervalFor(interval, intervalCount);
+	if (!paystack) {
+		const every = intervalCount === 1 ? `every ${interval}` : `every ${intervalCount} ${interval}s`;
+		throw new Error(
+			`Paystack can't bill ${every}. Choose daily, weekly, monthly, every 3 or 6 months, or yearly.`,
+		);
+	}
+	return { name: line.name, interval: paystack };
+}
+
+/** A plan code from a charge or verify payload: an object with `plan_code`, or the code itself. */
+function planCodeOf(...candidates: unknown[]): string | undefined {
+	for (const plan of candidates) {
+		if (typeof plan === "string" && plan.startsWith("PLN_")) return plan;
+		if (plan && typeof plan === "object") {
+			const code = (plan as { plan_code?: unknown }).plan_code;
+			if (typeof code === "string" && code !== "") return code;
+		}
+	}
+	return undefined;
+}
+
+/** Paystack subscription statuses, from https://paystack.com/docs/payments/subscriptions/. */
+function subscriptionStatusOf(status: unknown): {
+	status: ProviderSubscriptionInfo["status"];
+	cancelAtPeriodEnd?: boolean;
+} {
+	switch (status) {
+		case "active":
+			return { status: "active", cancelAtPeriodEnd: false };
+		case "non-renewing":
+			return { status: "active", cancelAtPeriodEnd: true };
+		case "attention":
+			return { status: "past_due" };
+		case "completed":
+		case "cancelled":
+			return { status: "canceled" };
+		default:
+			return { status: "incomplete" };
+	}
+}
+
+function isoDate(value: unknown): string | undefined {
+	if (typeof value !== "string" || value === "") return undefined;
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+interface PaystackSubscriptionRow {
+	subscription_code?: string;
+	email_token?: string;
+	status?: string;
+	amount?: number;
+	next_payment_date?: string | null;
+	createdAt?: string;
+	plan?: { plan_code?: string; interval?: string; currency?: string } | number;
+}
+
+/**
+ * The Paystack subscription on a plan. Paystack filters subscriptions by the
+ * plan's numeric id, so the code is looked up first. DashCommerce creates one
+ * plan per subscription; if Paystack lists more than one, the newest wins.
+ */
+async function subscriptionForPlan(
+	ctx: PaymentProviderRuntimeContext,
+	client: PaystackClientOptions,
+	planCode: string,
+): Promise<PaystackSubscriptionRow & { subscription_code: string; email_token: string }> {
+	const plan = await call<{ id?: number }>(ctx, {
+		client,
+		method: "GET",
+		path: `/plan/${encodeURIComponent(planCode)}`,
+	});
+	if (!Number.isSafeInteger(plan?.id)) {
+		throw new Error(`Paystack returned no id for plan ${planCode}`);
+	}
+	const rows = await call<PaystackSubscriptionRow[]>(ctx, {
+		client,
+		method: "GET",
+		path: `/subscription?plan=${encodeURIComponent(String(plan.id))}`,
+	});
+	const usable = (Array.isArray(rows) ? rows : [])
+		.filter(
+			(row): row is PaystackSubscriptionRow & { subscription_code: string; email_token: string } =>
+				typeof row?.subscription_code === "string" &&
+				row.subscription_code !== "" &&
+				typeof row.email_token === "string" &&
+				row.email_token !== "",
+		)
+		.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+	const row = usable[0];
+	if (!row) throw new Error(`Paystack has no subscription on plan ${planCode}`);
+	return row;
+}
+
+function subscriptionInfo(
+	planCode: string,
+	row: PaystackSubscriptionRow,
+): ProviderSubscriptionInfo {
+	const plan = typeof row.plan === "object" ? row.plan : undefined;
+	const interval = coreIntervalFor(plan?.interval);
+	const nextPayment = isoDate(row.next_payment_date);
+	return {
+		providerSubscriptionId: planCode,
+		...subscriptionStatusOf(row.status),
+		...(nextPayment ? { currentPeriodEnd: nextPayment } : {}),
+		...(typeof row.amount === "number" ? { amount: row.amount } : {}),
+		...(plan?.currency ? { currency: plan.currency.toUpperCase() } : {}),
+		...(interval ?? {}),
+	};
+}
+
+/** What a plan charge says about its subscription. Core works out the period. */
+function chargeSubscription(
+	planCode: string,
+	charge: { amount?: number; currency?: string; plan?: unknown },
+): ProviderSubscriptionInfo {
+	const interval =
+		charge.plan && typeof charge.plan === "object"
+			? coreIntervalFor((charge.plan as { interval?: unknown }).interval)
+			: undefined;
+	return {
+		providerSubscriptionId: planCode,
+		status: "active",
+		...(typeof charge.amount === "number" ? { amount: charge.amount } : {}),
+		...(charge.currency ? { currency: charge.currency.toUpperCase() } : {}),
+		...(interval ?? {}),
+	};
+}
+
+/** Subscription and invoice webhooks that change a subscription's state. */
+const SUBSCRIPTION_EVENT_STATUS: Record<
+	string,
+	{ status: ProviderSubscriptionInfo["status"]; cancelAtPeriodEnd?: boolean }
+> = {
+	"subscription.create": { status: "active" },
+	"subscription.disable": { status: "canceled" },
+	"subscription.not_renew": { status: "active", cancelAtPeriodEnd: true },
+	"invoice.payment_failed": { status: "past_due" },
+};
+
+interface PaystackSubscriptionWebhookData {
+	subscription_code?: string;
+	invoice_code?: string;
+	plan?: unknown;
+	subscription?: { subscription_code?: string; plan?: unknown };
+}
+
+/**
+ * A subscription's new state, keyed by its plan code. Subscription events
+ * carry `data.plan`; invoice events carry `data.subscription`, and the plan
+ * is read from either. Without a plan code or a subscription code the event
+ * is left unhandled rather than matched by guesswork.
+ */
+function subscriptionEvent(
+	eventName: string,
+	data: PaystackSubscriptionWebhookData | undefined,
+	raw: unknown,
+): NormalizedPaymentEvent {
+	const mapped = SUBSCRIPTION_EVENT_STATUS[eventName];
+	const planCode = planCodeOf(data?.plan, data?.subscription?.plan);
+	const subscriptionCode = data?.subscription_code ?? data?.subscription?.subscription_code;
+	if (!mapped || !planCode || typeof subscriptionCode !== "string" || subscriptionCode === "") {
+		return { type: "unhandled", providerEventType: eventName, raw };
+	}
+	const invoice =
+		typeof data?.invoice_code === "string" && data.invoice_code ? `:${data.invoice_code}` : "";
+	return {
+		type: "subscription.updated",
+		providerId: "paystack",
+		// Paystack sends no event id; the event, subscription and invoice stand in.
+		providerEventId: `${eventName}:${subscriptionCode}${invoice}`,
+		providerSubscriptionId: planCode,
+		status: mapped.status,
+		...(mapped.cancelAtPeriodEnd !== undefined
+			? { cancelAtPeriodEnd: mapped.cancelAtPeriodEnd }
+			: {}),
+		raw,
+	};
+}
+
 export const paystackPaymentProvider: PaymentProvider = {
 	id: "paystack",
 	label: "Paystack",
@@ -542,7 +862,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		// it, so Paystack charges the right amount without its own coupons.
 		coupons: true,
 		connect: false,
-		subscriptions: false,
+		subscriptions: true,
 		splits: true,
 	},
 
@@ -589,9 +909,8 @@ export const paystackPaymentProvider: PaymentProvider = {
 		if (!SUPPORTED_CURRENCIES.has(currency)) {
 			throw new CurrencyNotSupportedError(currency);
 		}
-		if (input.mode === "subscription") {
-			throw new Error("Paystack provider does not support subscription checkout");
-		}
+		// Checked before anything is sent, so a refusal creates nothing at Paystack.
+		const plan = input.mode === "subscription" ? planFor(input) : undefined;
 
 		const client = toPaystackClient(credentials);
 		const channels = mapChannels(input.preferredChannels);
@@ -600,6 +919,24 @@ export const paystackPaymentProvider: PaymentProvider = {
 
 		let data: PaystackInitializeData;
 		try {
+			// One plan per subscription, for the cart total, so each renewal
+			// charges what the customer paid at checkout.
+			const planCode = plan
+				? (
+						await call<{ plan_code?: string }>(ctx, {
+							client,
+							path: "/plan",
+							body: {
+								name: plan.name,
+								amount: input.amount,
+								interval: plan.interval,
+								currency,
+								description: `DashCommerce subscription, order draft ${input.orderDraftId}`,
+							},
+						})
+					).plan_code
+				: undefined;
+			if (plan && !planCode) throw new Error("Paystack returned no plan code");
 			data = await call<PaystackInitializeData>(ctx, {
 				client,
 				path: "/transaction/initialize",
@@ -615,6 +952,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 					},
 					...(channels ? { channels } : {}),
 					...(split ? { split } : {}),
+					...(planCode ? { plan: planCode } : {}),
 				},
 			});
 		} catch (err) {
@@ -674,6 +1012,18 @@ export const paystackPaymentProvider: PaymentProvider = {
 			return refundEvent(event.event, event.data as unknown as PaystackRefundWebhookData, event);
 		}
 
+		if (DISPUTE_EVENTS.has(event.event)) {
+			return disputeEvent(event.event, event.data as unknown as PaystackDisputeWebhookData, event);
+		}
+
+		if (event.event.startsWith("subscription.") || event.event === "invoice.payment_failed") {
+			return subscriptionEvent(
+				event.event,
+				event.data as unknown as PaystackSubscriptionWebhookData,
+				event,
+			);
+		}
+
 		// Paystack documents `charge.success` for completed payments. It has no
 		// `charge.failed` webhook, so failures are left to the draft expiring.
 		if (event.event === "charge.success") {
@@ -683,7 +1033,15 @@ export const paystackPaymentProvider: PaymentProvider = {
 				typeof metaDraftId === "string" && metaDraftId
 					? metaDraftId
 					: draftIdFromReference(d?.reference ?? "");
-			if (!orderDraftId || !d.reference || !d.currency || typeof d.amount !== "number") {
+			// A renewal is a plan charge with Paystack's own reference and no
+			// draft: core records it against the subscription, not as an order.
+			const planCode = planCodeOf(d?.plan);
+			if (
+				(!orderDraftId && !planCode) ||
+				!d.reference ||
+				!d.currency ||
+				typeof d.amount !== "number"
+			) {
 				return {
 					type: "unhandled",
 					providerEventType: event.event,
@@ -702,7 +1060,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 
 			return {
 				type: "charge.succeeded",
-				orderDraftId,
+				orderDraftId: orderDraftId ?? "",
 				providerId: "paystack",
 				// The reference, not the numeric id: core passes paymentReference
 				// to getPaymentStatus, and /transaction/verify accepts only the
@@ -725,6 +1083,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 				},
 				...(displayChannel ? { channel: displayChannel } : {}),
 				...(splitSettlement ? { splitSettlement } : {}),
+				...(planCode ? { subscription: chargeSubscription(planCode, d) } : {}),
 				raw: event,
 			};
 		}
@@ -782,13 +1141,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		ctx: PaymentProviderRuntimeContext,
 		paymentOrCheckoutReference: string,
 		credentials: PaymentProviderCredentials,
-	): Promise<{
-		status: "pending" | "succeeded" | "failed";
-		paymentReference?: string;
-		amount?: number;
-		currency?: string;
-		reason?: string;
-	}> {
+	): Promise<PaymentStatusResult> {
 		const client = toPaystackClient(credentials);
 		if (!paymentOrCheckoutReference) {
 			return {
@@ -816,12 +1169,80 @@ export const paystackPaymentProvider: PaymentProvider = {
 				};
 			}
 		}
+		const planCode = planCodeOf(data.plan, data.plan_object);
 		return {
 			status: status ?? "pending",
 			paymentReference: data.reference,
 			amount: data.amount,
 			currency: data.currency?.toUpperCase(),
 			reason: status ? data.gateway_response : `Unrecognised Paystack status: ${data.status}`,
+			...(planCode
+				? {
+						subscription: chargeSubscription(planCode, {
+							amount: data.amount,
+							currency: data.currency,
+							plan: data.plan_object ?? data.plan,
+						}),
+					}
+				: {}),
+		};
+	},
+
+	async getSubscription(
+		ctx: PaymentProviderRuntimeContext,
+		providerSubscriptionId: string,
+		credentials: PaymentProviderCredentials,
+	): Promise<ProviderSubscriptionInfo> {
+		const row = await subscriptionForPlan(
+			ctx,
+			toPaystackClient(credentials),
+			providerSubscriptionId,
+		);
+		return subscriptionInfo(providerSubscriptionId, row);
+	},
+
+	/**
+	 * Paystack has no "cancel at period end": disabling stops future charges
+	 * and the paid period stays. So this reports the subscription as active
+	 * until the end of the period already paid for, whatever mode core asks.
+	 */
+	async cancelSubscription(
+		ctx: PaymentProviderRuntimeContext,
+		input: { providerSubscriptionId: string; atPeriodEnd?: boolean },
+		credentials: PaymentProviderCredentials,
+	): Promise<ProviderSubscriptionInfo> {
+		const client = toPaystackClient(credentials);
+		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
+		await call(ctx, {
+			client,
+			path: "/subscription/disable",
+			body: { code: row.subscription_code, token: row.email_token },
+		});
+		const paidUntil = isoDate(row.next_payment_date);
+		return {
+			...subscriptionInfo(input.providerSubscriptionId, row),
+			status: "active",
+			cancelAtPeriodEnd: true,
+			...(paidUntil ? { currentPeriodEnd: paidUntil } : {}),
+		};
+	},
+
+	async resumeSubscription(
+		ctx: PaymentProviderRuntimeContext,
+		input: { providerSubscriptionId: string },
+		credentials: PaymentProviderCredentials,
+	): Promise<ProviderSubscriptionInfo> {
+		const client = toPaystackClient(credentials);
+		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
+		await call(ctx, {
+			client,
+			path: "/subscription/enable",
+			body: { code: row.subscription_code, token: row.email_token },
+		});
+		return {
+			...subscriptionInfo(input.providerSubscriptionId, row),
+			status: "active",
+			cancelAtPeriodEnd: false,
 		};
 	},
 

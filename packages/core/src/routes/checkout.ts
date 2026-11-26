@@ -188,6 +188,20 @@ async function repriceAndCheckStock(ctx: PluginContext, cart: CartState): Promis
 	return { items: out, errors, stockEntries };
 }
 
+/**
+ * Whether the cart has the address a payment needs when the provider's page
+ * doesn't collect one. Delivery needs a street and town; pickup needs none;
+ * a digital cart needs any address (the billing country).
+ */
+function hasAddressFor(cart: CartState, hasPhysical: boolean, isPickup: boolean): boolean {
+	if (isPickup) return true;
+	if (hasPhysical) {
+		const a = cart.shippingAddress;
+		return Boolean(a?.line1?.trim() && a?.city?.trim());
+	}
+	return Boolean(cart.billingAddress || cart.shippingAddress);
+}
+
 function totalsChanged(before: CartState, after: CartState): boolean {
 	return (
 		before.total.amount !== after.total.amount ||
@@ -548,10 +562,12 @@ export const checkoutRoutes = {
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
 			}
+			// Local pickup: nothing is delivered, so no delivery address.
+			const isPickup = recalculated.shippingMethod?.pickup !== undefined;
 			if (!provider.collectsCustomerDetails) {
 				const missing = [
 					...(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recalculated.customerEmail ?? "") ? [] : ["email"]),
-					...(recalculated.billingAddress || recalculated.shippingAddress ? [] : ["address"]),
+					...(hasAddressFor(recalculated, hasPhysical, isPickup) ? [] : ["address"]),
 				];
 				if (missing.length > 0) {
 					return new Response(
@@ -590,6 +606,20 @@ export const checkoutRoutes = {
 					JSON.stringify({
 						error:
 							"Subscription and one-time items can't be purchased together. Place them as separate orders.",
+					}),
+					{ status: 409, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			// Recurring vendor splits are not implemented for any provider:
+			// Stripe's subscription path does not send transfer_data, and
+			// Flutterwave's Payment Plans do not guarantee subaccount payouts on
+			// renewal. Refuse rather than underpay the vendor.
+			if (isSubscriptionCart && recalculated.items.some((item) => item.vendorId)) {
+				return new Response(
+					JSON.stringify({
+						error:
+							"Subscription carts with vendor-owned items are not supported yet. Split the subscription from the vendor items.",
+						code: "subscription_vendor_items",
 					}),
 					{ status: 409, headers: { "Content-Type": "application/json" } },
 				);
@@ -834,7 +864,7 @@ export const checkoutRoutes = {
 				metadata,
 				...(allocations ? { allocations } : {}),
 				...(platformRemainderMinor !== undefined ? { platformRemainderMinor } : {}),
-				...(hasPhysical && recalculated.shippingAddress
+				...(hasPhysical && !isPickup && recalculated.shippingAddress
 					? {
 							shippingAddressCollection: {
 								allowedCountries: [recalculated.shippingAddress.country],
