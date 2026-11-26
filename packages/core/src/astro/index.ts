@@ -11,6 +11,7 @@
  * project, not in our build pipeline.
  */
 
+export { STOREFRONT_CURRENCY_COOKIE, storefrontCurrency } from "./currency";
 import ProductEmbedBlock from "./components/ProductEmbedBlock.astro";
 import ProductGridBlock from "./components/ProductGridBlock.astro";
 import ReviewQuoteBlock from "./components/ReviewQuoteBlock.astro";

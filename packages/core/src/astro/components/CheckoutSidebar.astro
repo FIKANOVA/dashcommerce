@@ -11,8 +11,19 @@ interface Props {
 	 * the summary then shows the chosen option in its totals.
 	 */
 	shippingPicker?: boolean;
+	/**
+	 * Show the coupon box (default). Pass `false` when the payment is set up
+	 * before the customer presses Pay (Stripe Elements), so a code applied
+	 * afterwards can't show a discount that isn't charged.
+	 */
+	couponEntry?: boolean;
 }
 
-const { locale, shippingPicker = true } = Astro.props;
+const { locale, shippingPicker = true, couponEntry = true } = Astro.props;
 ---
-<CheckoutSidebarIsland client:load locale={locale} shippingPicker={shippingPicker} />
+<CheckoutSidebarIsland
+	client:load
+	locale={locale}
+	shippingPicker={shippingPicker}
+	couponEntry={couponEntry}
+/>

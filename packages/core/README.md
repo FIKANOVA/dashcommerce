@@ -11,7 +11,7 @@ The e-commerce plugin for [EmDash CMS](https://github.com/emdash-cms/emdash).
 | `.` | Vite / build time | Descriptor factory (`dashcommerce()`) — imported in `astro.config.mjs`. Side-effect-free. |
 | `./sandbox` | Runtime server | `definePlugin({ hooks, routes })` loaded by the emdash runtime. Sandbox-safe. |
 | `./admin` | Browser | React admin pages + dashboard widgets + field widgets. |
-| `./astro` | Host SSR | `blockComponents` registry for Portable Text block renderers. |
+| `./astro` | Host SSR | `blockComponents` registry for Portable Text block renderers, and `storefrontCurrency(Astro.cookies)`: the cart's currency (from the `dashcommerce_currency` cookie that cart responses set), to pass as `currency` to `<ProductDetails>`, `<ProductCard>` and `<ProductGrid>`. Pages that use it vary by that cookie, so a page cache must too. |
 | `./astro/components/*` | Host SSR | Storefront Astro components (`<ProductCard>`, `<CartSummary>`, etc.). |
 | `./astro/islands/*` | Host SSR + client | React islands (`CartDrawerIsland`, `CheckoutIsland`, etc.). |
 
@@ -69,11 +69,14 @@ For provider authors, `PaymentProvider` can declare:
 
 - `credentialFields`: the label, accepted prefixes and help text for the settings form.
 - `webhookHeaders`: the headers that identify its webhooks, besides `x-<id>-signature`. `verifyWebhook` receives every request header, and `credentials` (the provider's saved secret key and webhook secret) for headers signed with the API key rather than the webhook secret.
+- `checkoutStyles`: `["hosted", "on_page"]` to offer checkout over the store's page. `initCheckout` then returns `{ kind: "on_page", client }`, and the storefront hands `client` to the provider's browser client. `client` is public: `create-session` sends it to the browser as JSON, so put only what the browser needs in it (Paystack sends `{ accessCode }`), never a secret key or webhook secret.
 - `checkConnection`: one read-only call with the saved keys, behind a "Test connection" button in Settings. Return `{ ok, message }`, with `ok: false` and a message the merchant can act on for a wrong or under-permitted key.
 
 `parseWebhookEvent` may return `refund.updated` to move a pending refund to `succeeded` or `failed`. A failed refund stops counting against its order: the refunded total, payment status and order status are worked out again, and stock the refund put back is taken back off.
 
 Event-level dedup skips a repeated delivery even if the first one failed, so a duplicate side effect never runs. The exception is a failure to confirm the payment with the provider (`getPaymentStatus` throwing or not reporting paid). That failure happens before any side effect, so the provider's retry is processed.
+
+If the provider refuses the cart's currency (an account not enabled for it, say), throw `CurrencyNotSupportedError` from `initCheckout`. Core answers `create-session` with a 400 that tells the customer to choose another currency, instead of a 500.
 
 ## Seed merge CLI
 
