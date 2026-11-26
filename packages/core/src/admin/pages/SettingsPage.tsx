@@ -24,6 +24,7 @@ import {
 	NumberInput,
 	Select,
 	Toggle,
+	countryOptions,
 	currencyOptions,
 	toast,
 	usePluginAPI,
@@ -52,7 +53,7 @@ const GROUPS: GroupSpec[] = [
 		id: "store",
 		title: "Store",
 		description:
-			"Currency defaults. Only codes listed as enabled can be used at checkout.",
+			"Where the shop is based and the currencies it sells in. Only enabled currencies can be used at checkout.",
 	},
 	{
 		id: "provider",
@@ -90,6 +91,7 @@ const GROUPS: GroupSpec[] = [
 
 interface SettingsShape {
 	defaultCurrency: string | null;
+	storeCountry: string | null;
 	enabledCurrencies: string[] | null;
 	taxMode: TaxMode | null;
 	flatTaxRatePercent: number | null;
@@ -450,8 +452,23 @@ function GroupBody({
 }: GroupBodyProps) {
 	if (group === "store") {
 		const defaultCurrency = (eff("defaultCurrency", saved, draft) as string | null) ?? null;
+		const storeCountry = (eff("storeCountry", saved, draft) as string | null) ?? null;
 		return (
 			<>
+				<FormField
+					label="Shop country"
+					description="Where the shop is based. Checkout starts on this country; customers can change it."
+					error={errors.storeCountry}
+				>
+					<Combobox
+						value={storeCountry}
+						onChange={(next) => setField("storeCountry", next ?? null)}
+						options={countryOptions()}
+						placeholder="Select the shop's country"
+						disabled={disabled}
+						{...(errors.storeCountry ? { invalid: true } : {})}
+					/>
+				</FormField>
 				<FormField
 					label="Enabled currencies"
 					description="Customers can only check out in these currencies. Add the codes your pricing supports."

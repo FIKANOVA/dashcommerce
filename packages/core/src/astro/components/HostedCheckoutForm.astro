@@ -34,6 +34,12 @@ export interface Props {
    * page instead of redirecting. Only changes the wording.
    */
   onPage?: boolean;
+  /**
+   * ISO-2 country the form starts on, usually the shop's own. Without it
+   * the ship-to country starts on "US", as before, and a digital order's
+   * country starts empty.
+   */
+  defaultCountry?: string;
 }
 const {
   digitalOnly = false,
@@ -41,6 +47,7 @@ const {
   providerLabel = "Stripe",
   collectsDetails = true,
   onPage = false,
+  defaultCountry,
 } = Astro.props;
 const isStripe = providerId === "stripe";
 const payHint = onPage
@@ -70,7 +77,7 @@ const payHint = onPage
         <div class="hc-row-2">
           <label class="hc-label">
             <span>Country <small>(ISO-2)</small></span>
-            <input required id="hc-country" value="US" maxlength="2" autocomplete="shipping country" />
+            <input required id="hc-country" value={defaultCountry ?? "US"} maxlength="2" autocomplete="shipping country" />
           </label>
           <label class="hc-label">
             <span>Postal code <small>(optional)</small></span>
@@ -137,7 +144,7 @@ const payHint = onPage
           <div class="hc-digital-only">
             <label class="hc-label">
               <span>Country <small>(ISO-2)</small></span>
-              <input required id="hc-details-country" maxlength="2" autocomplete="country" placeholder="KE" />
+              <input required id="hc-details-country" value={defaultCountry} maxlength="2" autocomplete="country" placeholder="KE" />
             </label>
           </div>
         </fieldset>
