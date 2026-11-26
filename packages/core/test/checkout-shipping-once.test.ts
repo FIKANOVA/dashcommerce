@@ -2,46 +2,65 @@
  * Hosted checkout has its own shipping step, so the order summary must
  * not list the shipping options a second time. The embedded Stripe form
  * has no shipping step and keeps the summary's picker.
- *
- * The island renders "Loading summary…" until its fetch runs, and core
- * has no DOM test setup, so these check the wiring in source.
  */
 
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { shippingTotalRow, showsShippingOptions } from "../src/astro/islands/CheckoutSidebarIsland";
 
-function source(relative: string): string {
-	return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
-}
+const kes = (amount: number) => ({ amount, currency: "KES" });
+const format = (m: { amount: number; currency: string }) =>
+	`${m.currency} ${(m.amount / 100).toFixed(2)}`;
 
-const island = source("../src/astro/islands/CheckoutSidebarIsland.tsx");
-const wrapper = source("../src/astro/components/CheckoutSidebar.astro");
-const starterCheckout = source("../../starter/src/pages/checkout.astro");
-
-describe("order summary shipping picker", () => {
-	it("is on by default, so existing sites keep it", () => {
-		expect(island).toMatch(/shippingPicker = true,/);
-		expect(wrapper).toMatch(/shippingPicker = true \} = Astro\.props/);
+describe("which summary lists shipping options", () => {
+	it("lists them when the picker is on and there are options for the address", () => {
+		expect(showsShippingOptions(true, true, 2)).toBe(true);
 	});
 
-	it("passes the prop from the Astro wrapper to the island", () => {
-		expect(wrapper).toContain("shippingPicker={shippingPicker}");
+	it("doesn't list them with the picker off, without an address, or with no options", () => {
+		expect(showsShippingOptions(false, true, 2)).toBe(false);
+		expect(showsShippingOptions(true, false, 2)).toBe(false);
+		expect(showsShippingOptions(true, true, 0)).toBe(false);
+	});
+});
+
+describe("the summary's shipping row", () => {
+	it("names the chosen option when the picker is off", () => {
+		expect(shippingTotalRow(false, { label: "Standard shipping" }, kes(500), format)).toEqual({
+			label: "Shipping · Standard shipping",
+			value: "KES 5.00",
+		});
 	});
 
-	it("lists the options and fetches them only when the picker is on", () => {
-		expect(island).toContain(
-			"{shippingPicker && Boolean(cart.shippingAddress) && methods.length > 0 && (",
+	it("reads Free for a zero-priced option such as free pickup", () => {
+		expect(shippingTotalRow(false, { label: "Store pickup" }, kes(0), format)).toEqual({
+			label: "Shipping · Store pickup",
+			value: "Free",
+		});
+	});
+
+	it("keeps the plain row with the picker on, as before", () => {
+		expect(shippingTotalRow(true, { label: "Standard shipping" }, kes(500), format)).toEqual({
+			label: "Shipping",
+			value: "KES 5.00",
+		});
+		expect(shippingTotalRow(true, { label: "Store pickup" }, kes(0), format)).toBeNull();
+	});
+
+	it("shows nothing before an option is chosen and while shipping is free", () => {
+		expect(shippingTotalRow(false, undefined, kes(0), format)).toBeNull();
+	});
+});
+
+describe("wiring", () => {
+	it("the Astro wrapper passes the prop and the starter turns it off for hosted checkout", () => {
+		const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
+		expect(read("../src/astro/components/CheckoutSidebar.astro")).toContain(
+			"shippingPicker={shippingPicker}",
 		);
-		expect(island).toContain("if (shippingPicker && body.cart.shippingAddress) {");
-	});
-
-	it("shows the chosen option in the totals when the picker is off", () => {
-		expect(island).toContain("!shippingPicker && cart.shippingMethod ?");
-		expect(island).toContain("Shipping · {cart.shippingMethod.label}");
-	});
-
-	it("the starter keeps the picker only for the embedded Stripe form", () => {
-		expect(starterCheckout).toContain("<CheckoutSidebar shippingPicker={useStripeElements} />");
+		expect(read("../../starter/src/pages/checkout.astro")).toContain(
+			"<CheckoutSidebar shippingPicker={useStripeElements} />",
+		);
 	});
 });

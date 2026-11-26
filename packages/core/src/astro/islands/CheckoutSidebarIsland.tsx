@@ -56,6 +56,32 @@ function formatMoney(m: Money | null | undefined, locale = "en-US") {
 	}
 }
 
+/** Whether the summary lists shipping options to choose from. */
+export function showsShippingOptions(
+	shippingPicker: boolean,
+	hasAddress: boolean,
+	optionCount: number,
+): boolean {
+	return shippingPicker && hasAddress && optionCount > 0;
+}
+
+/**
+ * The summary's shipping row. With the picker off it names the chosen
+ * option, and a zero-priced one reads "Free"; otherwise it's a plain
+ * "Shipping" row, shown only when shipping costs something.
+ */
+export function shippingTotalRow(
+	shippingPicker: boolean,
+	method: { label: string } | undefined,
+	total: Money,
+	format: (m: Money) => string,
+): { label: string; value: string } | null {
+	if (!shippingPicker && method) {
+		return { label: `Shipping · ${method.label}`, value: total.amount > 0 ? format(total) : "Free" };
+	}
+	return total.amount > 0 ? { label: "Shipping", value: format(total) } : null;
+}
+
 export interface CheckoutSidebarIslandProps {
 	locale?: string;
 	/**
@@ -163,7 +189,7 @@ export default function CheckoutSidebarIsland({
 				))}
 			</ul>
 
-			{shippingPicker && Boolean(cart.shippingAddress) && methods.length > 0 && (
+			{showsShippingOptions(shippingPicker, Boolean(cart.shippingAddress), methods.length) && (
 				<section className="dc-sidebar-shipping">
 					<h4>Shipping</h4>
 					<ul>
@@ -199,21 +225,17 @@ export default function CheckoutSidebarIsland({
 						<span>−{formatMoney(cart.discountTotal, locale)}</span>
 					</div>
 				)}
-				{!shippingPicker && cart.shippingMethod ? (
-					<div className="dc-row">
-						<span>Shipping · {cart.shippingMethod.label}</span>
-						<span>
-							{cart.shippingTotal.amount > 0 ? formatMoney(cart.shippingTotal, locale) : "Free"}
-						</span>
-					</div>
-				) : (
-					cart.shippingTotal.amount > 0 && (
+				{(() => {
+					const row = shippingTotalRow(shippingPicker, cart.shippingMethod, cart.shippingTotal, (m) =>
+						formatMoney(m, locale),
+					);
+					return row ? (
 						<div className="dc-row">
-							<span>Shipping</span>
-							<span>{formatMoney(cart.shippingTotal, locale)}</span>
+							<span>{row.label}</span>
+							<span>{row.value}</span>
 						</div>
-					)
-				)}
+					) : null;
+				})()}
 				{cart.taxTotal.amount > 0 && (
 					<div className="dc-row">
 						<span>Tax</span>
