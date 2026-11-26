@@ -61,19 +61,74 @@ interface FakePaystackOptions {
  * requires the secret key on every call, and records what it charged.
  */
 function fakePaystack(options: FakePaystackOptions = {}) {
-	const transactions = new Map<string, { id: number; amount: number; currency: string }>();
+	const transactions = new Map<
+		string,
+		{ id: number; amount: number; currency: string; plan?: string }
+	>();
 	const refunds: Array<Record<string, unknown>> = [];
+	// Plans by code, and the subscription Paystack creates when a plan's
+	// first payment is initialised (the real API creates it once paid).
+	const plans = new Map<string, { id: number; body: Record<string, unknown> }>();
+	const subscriptions: Array<{
+		planId: number;
+		subscription_code: string;
+		email_token: string;
+		status: string;
+		amount: number;
+		next_payment_date: string;
+		createdAt: string;
+		plan: { plan_code: string; interval: string; currency: string };
+	}> = [];
+	const subscriptionCalls: Array<{ action: string; code: unknown; token: unknown }> = [];
+	let requests = 0;
 	let nextId = 55443322;
 	let lastInit: Record<string, unknown> | null = null;
 	let outagesLeft = options.verifyOutages ?? 0;
 	let verifyCalls = 0;
 
 	async function fetch(url: string, init?: RequestInit): Promise<Response> {
+		requests++;
 		const headers = new Headers(init?.headers);
 		if (headers.get("Authorization") !== `Bearer ${SECRET_KEY}`) {
 			return json({ status: false, message: "Invalid key" }, 401);
 		}
-		const { pathname } = new URL(url);
+		const { pathname, searchParams } = new URL(url);
+		if (pathname === "/plan" && init?.method !== "GET") {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			const intervals = ["daily", "weekly", "monthly", "quarterly", "biannually", "annually"];
+			if (!intervals.includes(String(body.interval)) || !Number.isInteger(body.amount)) {
+				return json({ status: false, message: "Invalid plan" }, 400);
+			}
+			const code = `PLN_${plans.size + 1}fake`;
+			plans.set(code, { id: 9000 + plans.size, body });
+			return json({
+				status: true,
+				message: "Plan created",
+				data: { ...body, plan_code: code, id: plans.get(code)?.id },
+			});
+		}
+		if (pathname.startsWith("/plan/")) {
+			const plan = plans.get(decodeURIComponent(pathname.slice("/plan/".length)));
+			if (!plan) return json({ status: false, message: "Plan not found" }, 404);
+			return json({ status: true, message: "Plan retrieved", data: { ...plan.body, id: plan.id } });
+		}
+		if (pathname === "/subscription" && init?.method === "GET") {
+			// As the live API, the filter is the plan's numeric id, not its code.
+			const planId = Number(searchParams.get("plan"));
+			const rows = subscriptions.filter((row) => row.planId === planId);
+			return json({ status: true, message: "Subscriptions retrieved", data: rows });
+		}
+		if (pathname === "/subscription/disable" || pathname === "/subscription/enable") {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			const action = pathname.endsWith("disable") ? "disable" : "enable";
+			subscriptionCalls.push({ action, code: body.code, token: body.token });
+			const row = subscriptions.find(
+				(r) => r.subscription_code === body.code && r.email_token === body.token,
+			);
+			if (!row) return json({ status: false, message: "Subscription not found" }, 404);
+			row.status = action === "disable" ? "non-renewing" : "active";
+			return json({ status: true, message: `Subscription ${action}d successfully` });
+		}
 		if (pathname === "/transaction/initialize") {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			lastInit = body;
@@ -94,11 +149,31 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 			if (!Number.isInteger(body.amount)) {
 				return json({ status: false, message: "Amount must be an integer in subunits" }, 400);
 			}
+			const planCode = typeof body.plan === "string" ? body.plan : undefined;
+			const plan = planCode ? plans.get(planCode) : undefined;
+			if (planCode && !plan) return json({ status: false, message: "Plan not found" }, 400);
 			transactions.set(reference, {
 				id: nextId++,
 				amount: options.chargedAmount ?? (body.amount as number),
 				currency: String(body.currency),
+				...(planCode ? { plan: planCode } : {}),
 			});
+			if (planCode && plan) {
+				subscriptions.push({
+					planId: plan.id,
+					subscription_code: `SUB_${subscriptions.length + 1}fake`,
+					email_token: `token${subscriptions.length + 1}fake`,
+					status: "active",
+					amount: plan.body.amount as number,
+					next_payment_date: "2026-12-27T09:00:00.000Z",
+					createdAt: "2026-11-27T09:00:00.000Z",
+					plan: {
+						plan_code: planCode,
+						interval: String(plan.body.interval),
+						currency: String(plan.body.currency),
+					},
+				});
+			}
 			return json({
 				status: true,
 				message: "Authorization URL created",
@@ -180,10 +255,30 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 		return json({ status: false, message: "Not found" }, 404);
 	}
 
+	/** Paystack charging a renewal itself: a new reference on the same plan. */
+	function renew(planCode: string) {
+		const plan = plans.get(planCode);
+		if (!plan) throw new Error(`No plan ${planCode}`);
+		const reference = `renewal${transactions.size + 1}x`;
+		const tx = {
+			id: nextId++,
+			amount: plan.body.amount as number,
+			currency: String(plan.body.currency),
+			plan: planCode,
+		};
+		transactions.set(reference, tx);
+		return { reference, ...tx };
+	}
+
 	return {
 		fetch,
 		transactions,
 		refunds,
+		plans,
+		subscriptions,
+		subscriptionCalls,
+		renew,
+		getRequests: () => requests,
 		getLastInit: () => lastInit,
 		getVerifyCalls: () => verifyCalls,
 	};
@@ -1022,5 +1117,236 @@ describe("@dashcommerce/paystack multi-vendor through core", () => {
 			platformRemainder: { amount: 173250, currency: "KES" },
 			providerFee: { amount: 6750, currency: "KES" },
 		});
+	});
+});
+
+// ── Subscriptions ───────────────────────────────────────────────────────────
+
+describe("@dashcommerce/paystack subscriptions through core", () => {
+	/** The ticket product sold monthly, KES 1,500 a month. */
+	function membershipCart(
+		sessionId: string,
+		config: Record<string, unknown> = { interval: "month", intervalCount: 1 },
+	): CartState {
+		const cart = ticketCart(sessionId) as unknown as { items: Array<Record<string, unknown>> };
+		cart.items = cart.items.map((item) => ({
+			...item,
+			subscriptionConfig: config,
+		}));
+		return cart as unknown as CartState;
+	}
+
+	async function startSubscription(sessionId: string, config?: Record<string, unknown>) {
+		const paystack = fakePaystack();
+		const harness = makeContext(paystackSettings, paystack.fetch);
+		await harness.ctx.kv.set(`cart:${sessionId}`, membershipCart(sessionId, config));
+		let res: Response;
+		try {
+			res = await startCheckout(harness.ctx, sessionId, { keepCart: true });
+		} catch (err) {
+			// EmDash turns a thrown route error into a 500.
+			res = json({ error: err instanceof Error ? err.message : String(err) }, 500);
+		}
+		return { paystack, ...harness, res };
+	}
+
+	/** Checkout, then Paystack's charge.success for the first payment. */
+	async function subscribed(sessionId: string) {
+		const started = await startSubscription(sessionId);
+		const { paystack, ctx } = started;
+		expect(started.res.status).toBe(200);
+		const { orderDraftId } = (await started.res.json()) as { orderDraftId: string };
+		const reference = String(paystack.getLastInit()?.reference);
+		const planCode = String(paystack.getLastInit()?.plan);
+		const tx = paystack.transactions.get(reference);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = JSON.parse(chargeSuccess(reference, orderDraftId, tx.id)) as {
+			data: Record<string, unknown>;
+		};
+		charge.data.plan = { plan_code: planCode, interval: "monthly", currency: "KES" };
+		const payload = JSON.stringify(charge);
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+		return { ...started, planCode };
+	}
+
+	async function deliverSigned(ctx: import("emdash").PluginContext, event: unknown) {
+		const payload = JSON.stringify(event);
+		return deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+	}
+
+	it("creates a plan for the cart and initialises the payment with it", async () => {
+		const { paystack, res } = await startSubscription("sess_sub_plan");
+		expect(res.status).toBe(200);
+		expect(paystack.plans.size).toBe(1);
+		const [code, plan] = Array.from(paystack.plans.entries())[0] ?? [];
+		expect(plan?.body).toMatchObject({
+			name: "Matchday ticket",
+			amount: 150000,
+			interval: "monthly",
+			currency: "KES",
+		});
+		expect(paystack.getLastInit()?.plan).toBe(code);
+		expect(paystack.getLastInit()?.amount).toBe(150000);
+	});
+
+	it("records the first plan charge as one order and one active subscription", async () => {
+		const { getCol, planCode } = await subscribed("sess_sub_first");
+		expect(getCol("orders").size).toBe(1);
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.providerId).toBe("paystack");
+		expect(getCol("subscriptions").size).toBe(1);
+		const sub = Array.from(getCol("subscriptions").values())[0] as Record<string, unknown>;
+		expect(sub).toMatchObject({
+			providerId: "paystack",
+			providerSubscriptionId: planCode,
+			customerId: order.customerId,
+			status: "active",
+			interval: "month",
+			intervalCount: 1,
+			cancelAtPeriodEnd: false,
+		});
+		expect(order.subscriptionIds).toEqual([sub.id as string]);
+		expect(getCol("subscription_invoices").size).toBe(0);
+	});
+
+	it("records a renewal as a paid invoice and extends the period, with no second order", async () => {
+		const { paystack, ctx, getCol, planCode } = await subscribed("sess_sub_renew");
+		const before = Array.from(getCol("subscriptions").values())[0] as {
+			currentPeriodEnd: string;
+		};
+
+		// Paystack's renewal: its own reference, no DashCommerce metadata.
+		const renewal = paystack.renew(planCode);
+		const res = await deliverSigned(ctx, {
+			event: "charge.success",
+			data: {
+				id: renewal.id,
+				reference: renewal.reference,
+				amount: renewal.amount,
+				currency: "KES",
+				status: "success",
+				customer: { email: "supporter@example.com" },
+				channel: "card",
+				plan: { plan_code: planCode, interval: "monthly", currency: "KES" },
+			},
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ renewal: true });
+
+		expect(getCol("orders").size).toBe(1);
+		const invoice = Array.from(getCol("subscription_invoices").values())[0] as Record<
+			string,
+			unknown
+		>;
+		expect(invoice).toMatchObject({
+			providerId: "paystack",
+			providerInvoiceId: renewal.reference,
+			status: "paid",
+			amount: { amount: 150000, currency: "KES" },
+		});
+		const after = Array.from(getCol("subscriptions").values())[0] as {
+			currentPeriodStart: string;
+			currentPeriodEnd: string;
+		};
+		expect(after.currentPeriodStart).toBe(before.currentPeriodEnd);
+		expect(new Date(after.currentPeriodEnd).getTime()).toBeGreaterThan(
+			new Date(before.currentPeriodEnd).getTime(),
+		);
+	});
+
+	it("cancels and resumes from the admin with the subscription's code and email token", async () => {
+		const { paystack, ctx, getCol } = await subscribed("sess_sub_cancel");
+		const sub = Array.from(getCol("subscriptions").values())[0] as { id: string };
+		const paystackSub = paystack.subscriptions[0];
+		if (!paystackSub) throw new Error("Paystack has no subscription");
+
+		const action = async (name: string) =>
+			(await sandbox.routes["admin/subscriptions/action"].handler(
+				{
+					request: new Request(
+						`http://test/admin/subscriptions/action?id=${sub.id}&action=${name}`,
+						{ method: "POST" },
+					),
+					input: {},
+				} as unknown as import("emdash").RouteContext,
+				ctx,
+			)) as Response;
+
+		const cancelled = await action("cancel");
+		expect(cancelled.status).toBe(200);
+		expect(paystack.subscriptionCalls).toEqual([
+			{ action: "disable", code: paystackSub.subscription_code, token: paystackSub.email_token },
+		]);
+		// Paystack has no cancel at period end: the paid period stays.
+		expect(getCol("subscriptions").get(sub.id)).toMatchObject({
+			status: "active",
+			cancelAtPeriodEnd: true,
+			currentPeriodEnd: paystackSub.next_payment_date,
+		});
+
+		const resumed = await action("resume");
+		expect(resumed.status).toBe(200);
+		expect(paystack.subscriptionCalls[1]).toEqual({
+			action: "enable",
+			code: paystackSub.subscription_code,
+			token: paystackSub.email_token,
+		});
+		expect(getCol("subscriptions").get(sub.id)).toMatchObject({
+			status: "active",
+			cancelAtPeriodEnd: false,
+		});
+	});
+
+	it("marks the subscription past due on invoice.payment_failed and cancelled on subscription.disable", async () => {
+		const { paystack, ctx, getCol, planCode } = await subscribed("sess_sub_events");
+		const sub = Array.from(getCol("subscriptions").values())[0] as { id: string };
+		const code = paystack.subscriptions[0]?.subscription_code;
+
+		const failed = await deliverSigned(ctx, {
+			event: "invoice.payment_failed",
+			data: {
+				invoice_code: "INV_1fake",
+				paid: false,
+				subscription: {
+					subscription_code: code,
+					status: "attention",
+					plan: { plan_code: planCode },
+				},
+			},
+		});
+		expect(failed.status).toBe(200);
+		expect(await failed.json()).toMatchObject({ subscriptionId: sub.id });
+		expect((getCol("subscriptions").get(sub.id) as { status: string }).status).toBe("past_due");
+
+		const disabled = await deliverSigned(ctx, {
+			event: "subscription.disable",
+			data: { subscription_code: code, status: "cancelled", plan: { plan_code: planCode } },
+		});
+		expect(disabled.status).toBe(200);
+		expect((getCol("subscriptions").get(sub.id) as { status: string }).status).toBe("canceled");
+	});
+
+	it("refuses an interval Paystack can't bill before calling Paystack", async () => {
+		const { paystack, res } = await startSubscription("sess_sub_fortnight", {
+			interval: "week",
+			intervalCount: 2,
+		});
+		expect(res.status).not.toBe(200);
+		expect(((await res.json()) as { error?: string }).error).toBe(
+			"Paystack can't bill every 2 weeks. Choose daily, weekly, monthly, every 3 or 6 months, or yearly.",
+		);
+		expect(paystack.getRequests()).toBe(0);
+	});
+
+	it("refuses a free trial before calling Paystack", async () => {
+		const { paystack, res } = await startSubscription("sess_sub_trial", {
+			interval: "month",
+			intervalCount: 1,
+			trialDays: 14,
+		});
+		expect(res.status).not.toBe(200);
+		expect(((await res.json()) as { error?: string }).error).toMatch(/free trial/);
+		expect(paystack.getRequests()).toBe(0);
 	});
 });
