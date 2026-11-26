@@ -95,6 +95,6 @@ describe("coupon entry on the storefront", () => {
 			fileURLToPath(new URL("../../starter/src/pages/checkout.astro", import.meta.url)),
 			"utf8",
 		);
-		expect(starter).toContain("<CheckoutSidebar couponEntry={!useStripeElements} />");
+		expect(starter).toMatch(/<CheckoutSidebar\b[^>]*\bcouponEntry=\{!useStripeElements\}/);
 	});
 });
