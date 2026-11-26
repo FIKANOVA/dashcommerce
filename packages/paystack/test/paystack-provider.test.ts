@@ -167,7 +167,7 @@ describe("paystackPaymentProvider", () => {
 			).rejects.toMatchObject({ code: "currency_not_supported", currency: "USD" });
 		});
 
-		it("throws before calling Paystack for subscription mode", async () => {
+		it("throws before calling Paystack for a subscription with no recurring line", async () => {
 			let calls = 0;
 			const ctx = makeMockRuntimeContext(async () => {
 				calls++;
