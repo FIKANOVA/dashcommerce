@@ -73,6 +73,24 @@ describe("shipping zone matching", () => {
 		expect(pickZone(nyAddr, zones)?.id).toBe("all");
 	});
 
+	it("prefers a zone naming the region over a country-wide zone of the same order", () => {
+		const zones = [
+			zone("ke", [{ country: "KE" }], 0),
+			zone("nairobi", [{ country: "KE", regions: ["30"] }], 0),
+		];
+		expect(pickZone(address("KE", "30"), zones)?.id).toBe("nairobi");
+		expect(pickZone(address("KE", "31"), zones)?.id).toBe("ke");
+		expect(pickZone(address("KE", ""), zones)?.id).toBe("ke");
+	});
+
+	it("still lets a lower order win over a region match", () => {
+		const zones = [
+			zone("ke", [{ country: "KE" }], 0),
+			zone("nairobi", [{ country: "KE", regions: ["30"] }], 5),
+		];
+		expect(pickZone(address("KE", "30"), zones)?.id).toBe("ke");
+	});
+
 	it("returns null when no zone matches", () => {
 		const zones = [zone("canada", [{ country: "CA" }])];
 		expect(pickZone(address("US", "NY"), zones)).toBeNull();

@@ -42,6 +42,8 @@ import type {
 	ShippingZone,
 } from "../../types";
 import { normalizeShippingShape, type ShippingShape } from "../shipping-shape";
+import { getCountryName } from "../../data/countries";
+import { REGION_TABLE, regionLabel, regionName } from "../../data/regions";
 import { T } from "../theme";
 
 /** Matches the server's limits in `routes/admin-api.ts`. */
@@ -415,7 +417,13 @@ function ZoneCard({
 	const covers =
 		zone.locations.length === 0
 			? "Everywhere (fallback)"
-			: zone.locations.map((l) => l.country).join(", ");
+			: zone.locations
+					.map((l) =>
+						l.regions && l.regions.length > 0
+							? `${l.country} (${l.regions.map((r) => regionName(l.country, r)).join(", ")})`
+							: l.country,
+					)
+					.join(", ");
 
 	return (
 		<div
@@ -579,6 +587,23 @@ function ZoneEditor({
 	const [countries, setCountries] = useState<string[]>(
 		initial?.locations.map((l) => l.country) ?? [],
 	);
+	// Region codes by country. Empty means the whole country.
+	const [regions, setRegions] = useState<Record<string, string[]>>(() =>
+		Object.fromEntries(initial?.locations.map((l) => [l.country, l.regions ?? []]) ?? []),
+	);
+	// Typed codes for countries without named regions, kept as typed.
+	const [regionText, setRegionText] = useState<Record<string, string>>(() =>
+		Object.fromEntries(
+			initial?.locations.map((l) => [l.country, (l.regions ?? []).join(", ")]) ?? [],
+		),
+	);
+	const regionsFor = (country: string): string[] =>
+		REGION_TABLE[country]
+			? (regions[country] ?? [])
+			: (regionText[country] ?? "")
+					.split(",")
+					.map((r) => r.trim())
+					.filter(Boolean);
 	const [order, setOrder] = useState<number | null>(initial?.order ?? 0);
 	const [saving, setSaving] = useState(false);
 
@@ -596,9 +621,13 @@ function ZoneEditor({
 				try {
 					await onSave({
 						name: name.trim(),
-						locations: countries.map((c) => ({
-							country: c as ShippingZone["locations"][number]["country"],
-						})),
+						locations: countries.map((c) => {
+							const codes = regionsFor(c);
+							return {
+								country: c as ShippingZone["locations"][number]["country"],
+								...(codes.length > 0 ? { regions: codes } : {}),
+							};
+						}),
 						order: order ?? 0,
 					});
 				} finally {
@@ -626,6 +655,44 @@ function ZoneEditor({
 					placeholder="Add country…"
 				/>
 			</FormField>
+			{countries.map((country) => {
+				const table = REGION_TABLE[country];
+				const label = `${regionLabel(country)} in ${getCountryName(country)}`;
+				const description =
+					"Optional. Leave empty to cover the whole country. When a zone lists some, " +
+					`checkout asks customers in ${getCountryName(country)} for their ` +
+					`${regionLabel(country).toLowerCase()}.`;
+				const fieldId = `zone-regions-${country}`;
+				return (
+					<FormField key={country} label={label} description={description} htmlFor={fieldId}>
+						{table ? (
+							<MultiSelect
+								id={fieldId}
+								value={regions[country] ?? []}
+								onChange={(next) => setRegions((prev) => ({ ...prev, [country]: next }))}
+								options={table.regions.map((r) => ({
+									value: r.code,
+									label: r.name,
+									hint: `${country}-${r.code}`,
+								}))}
+								disabled={saving}
+								placeholder={`Add ${regionLabel(country).toLowerCase()}…`}
+							/>
+						) : (
+							<Input
+								id={fieldId}
+								value={regionText[country] ?? ""}
+								onChange={(e) => {
+									const text = e.currentTarget.value;
+									setRegionText((prev) => ({ ...prev, [country]: text }));
+								}}
+								placeholder="Region codes, separated by commas"
+								disabled={saving}
+							/>
+						)}
+					</FormField>
+				);
+			})}
 			<FormField
 				label="Order"
 				description="Lower numbers are evaluated first. Use this when zones overlap."
