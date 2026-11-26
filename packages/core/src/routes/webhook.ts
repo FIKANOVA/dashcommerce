@@ -17,6 +17,7 @@
  *   payment_intent.payment_failed / canceled → release stock lock
  *   charge.refunded           → recordRefundFromWebhook (idempotent dedup)
  *   refund.updated            → status update on refund row
+ *   charge.dispute.*          → applyDisputeUpdate (record, alert, count a loss)
  *   customer.subscription.*   → phase 7 (no-op here)
  *   invoice.*                 → phase 7 (no-op here)
  *
@@ -35,6 +36,7 @@ import {
 	findOrderByPaymentIntent,
 	loadOrderItems,
 } from "../orders/create";
+import { type DisputeEvent, applyDisputeUpdate } from "../orders/dispute";
 import { applyProviderRefundUpdate, recordRefundFromWebhook } from "../orders/refund";
 import {
 	type NormalizedPaymentEvent,
@@ -986,6 +988,28 @@ async function handleNormalizedChargeFailed(
 	});
 }
 
+async function handleDisputeEvent(
+	ctx: PluginContext,
+	provider: PaymentProvider,
+	event: DisputeEvent,
+): Promise<Response> {
+	if (event.providerId !== provider.id) {
+		return new Response(JSON.stringify({ error: "Dispute event from another provider" }), {
+			status: 400,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+	const outcome = await applyDisputeUpdate(ctx, event);
+	return new Response(
+		JSON.stringify({
+			received: true,
+			dispute: outcome,
+			...(outcome === "unknown" ? { orphan: true } : {}),
+		}),
+		{ status: 200, headers: { "Content-Type": "application/json" } },
+	);
+}
+
 export const webhookRoutes = {
 	"checkout/webhook": {
 		public: true,
@@ -1159,6 +1183,9 @@ export const webhookRoutes = {
 							{ status: 200, headers: { "Content-Type": "application/json" } },
 						);
 					}
+					if (normalized.type === "dispute.updated") {
+						return await handleDisputeEvent(ctx, provider, normalized);
+					}
 					return new Response(
 						JSON.stringify({
 							received: true,
@@ -1220,6 +1247,16 @@ export const webhookRoutes = {
 						);
 					case "charge.refunded":
 						return await handleChargeRefunded(ctx, event.data.object as StripeCharge);
+					case "charge.dispute.created":
+					case "charge.dispute.updated":
+					case "charge.dispute.closed":
+						if (normalized.type === "dispute.updated") {
+							return await handleDisputeEvent(ctx, provider, normalized);
+						}
+						return new Response(
+							JSON.stringify({ received: true, type: event.type, skipped: true }),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
 					case "customer.subscription.created":
 					case "customer.subscription.updated":
 					case "customer.subscription.resumed":

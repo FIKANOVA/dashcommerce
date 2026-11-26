@@ -203,6 +203,22 @@ export interface VendorSplit {
 	stripePaymentIntentId?: string; // when multi-PI model is used
 }
 
+/**
+ * A dispute (chargeback) on an order's payment, as the provider reported it.
+ * The merchant answers it in the provider's dashboard.
+ */
+export interface OrderDispute {
+	providerId: string;
+	providerDisputeId: string;
+	status: "open" | "won" | "lost";
+	amount: Money;
+	reason?: string;
+	/** When the merchant must answer by, if the provider said. */
+	dueAt?: IsoDateTime;
+	openedAt: IsoDateTime;
+	updatedAt: IsoDateTime;
+}
+
 /** One vendor's share of a split payment, as the provider settled it. */
 export interface OrderProviderSplitAllocation {
 	/** Matched vendor, when core can resolve the provider account reference. */
@@ -248,6 +264,8 @@ export interface Order {
 	vendorSplits?: VendorSplit[];
 	/** Provider-reported settlement of a split payment, for reconciliation. */
 	providerSplits?: OrderProviderSplit;
+	/** Disputes (chargebacks) the payment provider reported on this order. */
+	disputes?: OrderDispute[];
 	subscriptionIds?: string[];
 	stripePaymentIntentId: string; // unique — Stripe PaymentIntent id
 	/**
