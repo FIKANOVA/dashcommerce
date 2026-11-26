@@ -177,6 +177,29 @@ describe("dispute.updated", () => {
 		expect(refunds[0]?.reason).toBe("Dispute lost");
 	});
 
+	it("counts a loss on retry when the first delivery stored it but failed to count it", async () => {
+		const { ctx, getCol, order, reference } = await paidOrder();
+		// As if the first delivery wrote the lost dispute, then failed before the refund row.
+		getCol("orders").set(order.id, {
+			...orderRow(getCol, order.id),
+			disputes: [
+				{
+					providerId: "acme",
+					providerDisputeId: "dp_1",
+					status: "lost",
+					amount: { currency: "KES", amount: 150000 },
+					openedAt: "2026-11-01T00:00:00.000Z",
+					updatedAt: "2026-11-01T00:00:00.000Z",
+				},
+			],
+		});
+		await deliverWebhook(ctx, dispute(reference, "evt_retry", "lost"), headers);
+		const after = orderRow(getCol, order.id);
+		expect(after.refundedTotal.amount).toBe(150000);
+		expect(after.paymentStatus).toBe("refunded");
+		expect(getCol("refunds").size).toBe(1);
+	});
+
 	it("caps a lost dispute at what is still refundable", async () => {
 		const { ctx, getCol, order, reference } = await paidOrder();
 		await deliverWebhook(ctx, dispute(reference, "evt_d1", "lost", { amount: 999999 }), headers);

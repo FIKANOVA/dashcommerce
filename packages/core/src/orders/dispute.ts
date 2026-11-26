@@ -54,7 +54,15 @@ export async function applyDisputeUpdate(
 		(d) => d.providerId === event.providerId && d.providerDisputeId === event.providerDisputeId,
 	);
 	// A settled dispute never moves again (late or out-of-order deliveries).
-	if (previous && previous.status !== "open") return "unchanged";
+	if (previous && previous.status !== "open") {
+		// A redelivered loss still makes sure it was counted: if the earlier
+		// delivery stored the dispute but failed before counting it, the retry
+		// finishes the job. Counting is keyed on the dispute, so this is safe.
+		if (previous.status === "lost" && event.status === "lost") {
+			await recordLostDispute(ctx, order, previous);
+		}
+		return "unchanged";
+	}
 
 	const now = new Date().toISOString();
 	const dueAt = event.dueAt ?? previous?.dueAt;
