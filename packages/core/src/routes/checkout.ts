@@ -222,6 +222,8 @@ export const checkoutRoutes = {
 			const input = (routeCtx.input ?? {}) as {
 				customerEmail?: string;
 				notes?: string;
+				/** The total the customer saw when they pressed Pay. */
+				expectedTotal?: { amount?: unknown; currency?: unknown };
 			};
 
 			const { sessionId } = resolveSessionId(routeCtx.request);
@@ -284,7 +286,14 @@ export const checkoutRoutes = {
 
 			const policy = await readPricingPolicy(ctx);
 			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
-			if (totalsChanged(withContact, recalculated)) {
+			// Never charge a total the customer didn't see: the stored cart
+			// may have changed (another tab) since the payment form showed it.
+			const expected = input.expectedTotal;
+			const differsFromShown =
+				expected !== undefined &&
+				(expected.amount !== recalculated.total.amount ||
+					expected.currency !== recalculated.total.currency);
+			if (totalsChanged(withContact, recalculated) || differsFromShown) {
 				await save(ctx, recalculated);
 				return new Response(
 					JSON.stringify({
@@ -301,7 +310,7 @@ export const checkoutRoutes = {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
-			const savedCart = await save(ctx, recalculated);
+			await save(ctx, recalculated);
 
 			const orderDraftId = randomId();
 
@@ -391,8 +400,6 @@ export const checkoutRoutes = {
 					orderDraftId,
 					total: recalculated.total,
 					currency: recalculated.currency,
-					// Lets the payment form reuse this intent while the cart is unchanged.
-					cartUpdatedAt: savedCart.updatedAt,
 				}),
 				{ status: 200, headers: { "Content-Type": "application/json" } },
 			);

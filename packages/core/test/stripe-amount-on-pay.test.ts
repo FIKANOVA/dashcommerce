@@ -5,15 +5,19 @@
  * again must not lock the shopper out of the stock they already hold.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { RouteContext } from "emdash";
 import {
-	type CreatedIntent,
 	type PayableCart,
-	canReuseIntent,
 	cartReadyForPayment,
 	deferredElementsOptions,
 } from "../src/astro/islands/CheckoutFormIsland";
+import { deleteLock } from "../src/cart/lock";
+import {
+	createMockPaymentProvider,
+	registerPaymentProvider,
+	resetPaymentProviders,
+} from "../src/payment-provider";
 import sandbox from "../src/sandbox-entry";
 import type { CartState } from "../src/types";
 import { makeRouteContext } from "./helpers/route-harness";
@@ -42,33 +46,17 @@ describe("the card form before Pay", () => {
 			currency: "kes",
 		});
 	});
-
-	it("reuses the last intent only while the cart is unchanged", () => {
-		const last: CreatedIntent = {
-			clientSecret: "pi_1_secret",
-			orderDraftId: "d1",
-			paymentIntentId: "pi_1",
-			total: kes(174615),
-			currency: "KES",
-			cartUpdatedAt: "2026-11-26T09:00:00.000Z",
-		};
-		expect(canReuseIntent(last, cart)).toBe(true);
-		expect(canReuseIntent(null, cart)).toBe(false);
-		expect(canReuseIntent(last, { ...cart, updatedAt: "2026-11-26T09:01:00.000Z" })).toBe(false);
-		expect(canReuseIntent(last, { ...cart, total: kes(159604) })).toBe(false);
-		expect(canReuseIntent(last, { ...cart, currency: "USD" })).toBe(false);
-		expect(canReuseIntent({ ...last, cartUpdatedAt: undefined }, cart)).toBe(false);
-	});
 });
 
 /** A shop on Stripe Elements selling one mug, with exactly one left. */
-function shop() {
+function shop(settings: Record<string, unknown> = {}) {
 	let created = 0;
 	const { ctx, kvStore } = makeRouteContext(
 		{
 			"settings:paymentProvider": "stripe",
 			"settings:checkoutMode": "embedded",
 			"settings:stripeSecretKey": "sk_test_x",
+			...settings,
 		},
 		async (url, init) => {
 			if (url.includes("/v1/payment_intents") && init?.method === "POST") {
@@ -139,22 +127,27 @@ function shop() {
 			shippingTotal: kes(0),
 			taxTotal: kes(0),
 			total: kes(50000),
+			shippingMethod: { id: "pickup", label: "Store pickup", amount: kes(0) },
 			createdAt: "2026-11-26T08:00:00.000Z",
 			updatedAt: "2026-11-26T08:00:00.000Z",
 		} as unknown as CartState;
 		await ctx.kv.set(`cart:${sessionId}`, cart);
 	}
 
-	async function pay(sessionId: string) {
+	async function pay(
+		sessionId: string,
+		input: Record<string, unknown> = {},
+		route: "checkout/create-intent" | "checkout/create-session" = "checkout/create-intent",
+	) {
 		const routeCtx = {
 			...ctx,
-			request: new Request("http://test/checkout/create-intent", {
+			request: new Request(`http://test/${route}`, {
 				method: "POST",
 				headers: { Cookie: `dashcommerce_sid=${sessionId}` },
 			}),
-			input: {},
+			input,
 		} as unknown as RouteContext;
-		const res = (await sandbox.routes["checkout/create-intent"].handler(routeCtx, ctx)) as Response;
+		const res = (await sandbox.routes[route].handler(routeCtx, ctx)) as Response;
 		return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 	}
 
@@ -166,20 +159,10 @@ function shop() {
 			)
 			.map(([, value]) => (value as { orderDraftId: string }).orderDraftId);
 
-	return { ctx, addShopper, pay, locksFor };
+	return { ctx, kvStore, addShopper, pay, locksFor };
 }
 
 describe("checkout/create-intent", () => {
-	it("tells the form when the cart was saved, so an unchanged cart reuses the intent", async () => {
-		const { ctx, addShopper, pay } = shop();
-		await addShopper("sess_a");
-		const res = await pay("sess_a");
-		expect(res.status).toBe(200);
-		const saved = (await ctx.kv.get<CartState>("cart:sess_a")) as CartState;
-		expect(res.body.cartUpdatedAt).toBe(saved.updatedAt);
-		expect(res.body.clientSecret).toBe("pi_1_secret");
-	});
-
 	it("lets a shopper press Pay again without their own hold blocking the last unit", async () => {
 		const { addShopper, pay, locksFor } = shop();
 		await addShopper("sess_a");
@@ -200,5 +183,68 @@ describe("checkout/create-intent", () => {
 		const other = await pay("sess_b");
 		expect(other.status).toBe(409);
 		expect(JSON.stringify(other.body)).toContain("only 0 available");
+	});
+});
+
+afterEach(() => resetPaymentProviders());
+
+describe("the total the customer saw", () => {
+	it("is charged when it still stands", async () => {
+		const { addShopper, pay } = shop();
+		await addShopper("sess_a");
+		const res = await pay("sess_a", { expectedTotal: kes(50000) });
+		expect(res.status).toBe(200);
+		expect(res.body.total).toEqual(kes(50000));
+	});
+
+	it("is refused when the cart now costs something else, with the new total to show", async () => {
+		const { addShopper, pay } = shop();
+		await addShopper("sess_a");
+		const res = await pay("sess_a", { expectedTotal: kes(45000) });
+		expect(res.status).toBe(409);
+		expect(res.body.code).toBe("cart_totals_changed");
+		expect((res.body.cart as CartState).total).toEqual(kes(50000));
+	});
+});
+
+describe("holds across attempts", () => {
+	it("holds the stock again after a decline released the hold, and forgets released holds", async () => {
+		const { ctx, kvStore, addShopper, pay, locksFor } = shop();
+		await addShopper("sess_a");
+		const first = await pay("sess_a");
+		const draft = first.body.orderDraftId as string;
+		expect(kvStore.get("hold:sess_a")).toBe(draft);
+
+		// A decline (payment_intent.payment_failed) releases the hold.
+		await deleteLock(ctx, draft);
+		expect(locksFor("sess_a")).toEqual([]);
+		expect(kvStore.has("hold:sess_a")).toBe(false);
+
+		const retry = await pay("sess_a");
+		expect(retry.status).toBe(200);
+		expect(locksFor("sess_a")).toEqual([retry.body.orderDraftId as string]);
+	});
+
+	it("lets a shopper press Pay again on hosted checkout too", async () => {
+		registerPaymentProvider(createMockPaymentProvider());
+		const { ctx, addShopper, pay, locksFor } = shop({
+			"settings:paymentProvider": "mock",
+			"settings:checkoutMode": "hosted",
+			"settings:mockSecretKey": "k",
+			"settings:mockWebhookSecret": "test-secret",
+		});
+		await addShopper("sess_a");
+		const first = await pay("sess_a", {}, "checkout/create-session");
+		expect(first.status).toBe(200);
+		// The test shop has no shipping zones, so re-pricing drops the
+		// made-up option; put it back as a real chosen option would stay.
+		const stored = (await ctx.kv.get<CartState>("cart:sess_a")) as CartState;
+		await ctx.kv.set("cart:sess_a", {
+			...stored,
+			shippingMethod: { id: "pickup", label: "Store pickup", amount: kes(0) },
+		});
+		const second = await pay("sess_a", {}, "checkout/create-session");
+		expect(second.status).toBe(200);
+		expect(locksFor("sess_a")).toHaveLength(1);
 	});
 });

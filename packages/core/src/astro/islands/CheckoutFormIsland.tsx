@@ -10,10 +10,11 @@
  *      amount and currency. No PaymentIntent exists yet. The amount follows
  *      the cart: a coupon or shipping change at checkout updates it.
  *   3. On Pay: `elements.submit()` validates the card form, then
- *      POST /checkout/create-intent re-prices the cart on the server and
- *      creates the PaymentIntent for that total. If the cart hasn't
- *      changed since the last attempt (say, after a decline), the same
- *      intent is reused.
+ *      POST /checkout/create-intent with the total the customer saw. The
+ *      server re-prices the cart and, if that total still stands, creates
+ *      the PaymentIntent and holds the stock; otherwise it answers 409 with
+ *      the new total for the customer to check. Every press of Pay gets a
+ *      fresh intent and hold, so a retry after a decline is held again.
  *   4. `stripe.confirmPayment` with that client secret; Stripe handles 3DS
  *      and returns the customer to `returnUrl` with "{orderDraftId}"
  *      substituted, where the thank-you page polls for the order.
@@ -51,7 +52,6 @@ export interface CreatedIntent {
 	paymentIntentId: string;
 	total: Money;
 	currency: string;
-	cartUpdatedAt?: string;
 }
 
 const API = "/_emdash/api/plugins/dashcommerce";
@@ -68,21 +68,6 @@ export function deferredElementsOptions(cart: PayableCart): {
 	currency: string;
 } {
 	return { mode: "payment", amount: cart.total.amount, currency: cart.currency.toLowerCase() };
-}
-
-/**
- * Reuse the last intent only while the cart is exactly as it was when the
- * intent was created: same save time, total and currency. Any change (a
- * coupon, a shipping option, a quantity) means a new intent at the new
- * total.
- */
-export function canReuseIntent(last: CreatedIntent | null, cart: PayableCart): boolean {
-	return Boolean(
-		last?.cartUpdatedAt &&
-			last.cartUpdatedAt === cart.updatedAt &&
-			last.total.amount === cart.total.amount &&
-			last.currency === cart.currency,
-	);
 }
 
 function formatMoney(m: Money): string {
@@ -183,21 +168,16 @@ function InnerForm({
 	const elements = useElements();
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const lastIntent = useRef<CreatedIntent | null>(null);
+	// <Elements options> keeps the card form's amount in step with `cart`.
 
-	// Keep the card form's amount in step with the cart.
-	useEffect(() => {
-		if (!elements) return;
-		const { amount, currency } = deferredElementsOptions(cart);
-		elements.update({ amount, currency });
-	}, [elements, cart]);
-
-	async function createIntent(): Promise<CreatedIntent | null> {
+	async function createIntent(shown: Money): Promise<CreatedIntent | null> {
 		const res = await fetch(`${API}/checkout/create-intent`, {
 			method: "POST",
 			credentials: "include",
 			headers: { "Content-Type": "application/json" },
-			body: "{}",
+			// The server refuses if its re-priced total differs from what the
+			// customer saw, so they're never charged an amount they didn't see.
+			body: JSON.stringify({ expectedTotal: shown }),
 		});
 		const body = (await res.json().catch(() => ({}))) as Partial<CreatedIntent> & {
 			error?: unknown;
@@ -236,12 +216,8 @@ function InnerForm({
 				setError(submitError.message ?? "Check your payment details.");
 				return;
 			}
-			const current = (await fetchCart()) ?? cart;
-			const intent = canReuseIntent(lastIntent.current, current)
-				? lastIntent.current
-				: await createIntent();
+			const intent = await createIntent(cart.total);
 			if (!intent) return;
-			lastIntent.current = intent;
 			const { error: confirmError } = await stripe.confirmPayment({
 				elements,
 				clientSecret: intent.clientSecret,
