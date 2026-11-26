@@ -1,6 +1,8 @@
 ---
 import { getEntriesByTerm, getTaxonomyTerms, getTerm } from "emdash";
 import Shop from "../../layouts/Shop.astro";
+import { formatPrice, type PriceMap } from "../../lib/price";
+import { storefrontCurrency } from "@dashcommerce/core/astro";
 
 export const prerender = false;
 
@@ -27,12 +29,8 @@ const bg =
 
 const products = await getEntriesByTerm("products", "product_category", slug);
 
-type PriceMap = Record<string, { amount: number }>;
-const fmt = (priceMap?: PriceMap) => {
-  const p = priceMap?.USD;
-  if (!p) return null;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(p.amount / 100);
-};
+const currency = storefrontCurrency(Astro.cookies);
+const fmt = (priceMap?: PriceMap) => formatPrice(priceMap, currency);
 
 
 const typeGrad: Record<string, string> = {

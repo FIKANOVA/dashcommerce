@@ -6,6 +6,8 @@ import Banner from "../components/Banner.astro";
 import SectionHeader from "../components/SectionHeader.astro";
 import Shop from "../layouts/Shop.astro";
 import { getSiteMeta } from "../lib/site-meta";
+import { formatPrice, type PriceMap } from "../lib/price";
+import { storefrontCurrency } from "@dashcommerce/core/astro";
 
 const meta = await getSiteMeta();
 const { entries: products } = await getEmDashCollection("products");
@@ -73,12 +75,8 @@ try {
 }
 
 // ── Utilities ──
-type PriceMap = Record<string, { amount: number }>;
-const fmt = (priceMap?: PriceMap, currency = "USD") => {
-  const p = priceMap?.[currency];
-  if (!p) return null;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(p.amount / 100);
-};
+const currency = storefrontCurrency(Astro.cookies);
+const fmt = (priceMap?: PriceMap) => formatPrice(priceMap, currency);
 
 // Product type → gradient for placeholder images
 const typeGrad: Record<string, string> = {
