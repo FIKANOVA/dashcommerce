@@ -291,7 +291,62 @@ export async function recordRefundFromWebhook(
 	return refund;
 }
 
-export type ProviderRefundUpdateOutcome = "updated" | "unchanged" | "unknown" | "other-provider";
+/**
+ * Count a lost dispute like a refund: the provider has given the money back
+ * to the customer. Stored as a succeeded refund row keyed
+ * `dispute:<providerId>:<providerDisputeId>`, so the unique index on
+ * `stripeRefundId` stops it counting twice and it shows with the order's
+ * refunds. Capped at what is still refundable. No customer email: the
+ * customer's bank, not the shop, returned the money.
+ */
+export async function recordLostDispute(
+	ctx: PluginContext,
+	order: Order,
+	dispute: { providerId: string; providerDisputeId: string; amount: Money },
+): Promise<Refund | null> {
+	const key = `dispute:${dispute.providerId}:${dispute.providerDisputeId}`;
+	const existing = await refundsStore(ctx).query({ where: { stripeRefundId: key }, limit: 1 });
+	if (existing.items[0]) return null;
+	if (dispute.amount.currency !== order.currency) {
+		ctx.log.error("Lost dispute currency differs from the order; not counted", {
+			orderId: order.id,
+			providerDisputeId: dispute.providerDisputeId,
+			disputeCurrency: dispute.amount.currency,
+			orderCurrency: order.currency,
+		});
+		return null;
+	}
+	const remaining = Math.max(0, order.paidTotal.amount - order.refundedTotal.amount);
+	const amount = money(order.currency, Math.min(dispute.amount.amount, remaining));
+	const refund: Refund = {
+		id: randomId(),
+		orderId: order.id,
+		amount,
+		reason: "Dispute lost",
+		status: "succeeded",
+		stripeRefundId: key,
+		restocked: false,
+		orderStatusBefore: order.status,
+		createdAt: new Date().toISOString(),
+	};
+	await refundsStore(ctx).put(refund.id, refund);
+
+	const newRefundedTotal = add(order.refundedTotal, amount);
+	await ordersStore(ctx).put(order.id, {
+		...order,
+		refundedTotal: newRefundedTotal,
+		paymentStatus: derivePaymentStatus(order.paidTotal.amount, newRefundedTotal.amount),
+		status: deriveOrderStatusFromRefunds(
+			order.status,
+			order.paidTotal.amount,
+			newRefundedTotal.amount,
+		),
+		updatedAt: new Date().toISOString(),
+	});
+	return refund;
+}
+
+export type ProviderRefundUpdateOutcome ="updated" | "unchanged" | "unknown" | "other-provider";
 
 /**
  * Apply a provider's report that one of its refunds changed status.

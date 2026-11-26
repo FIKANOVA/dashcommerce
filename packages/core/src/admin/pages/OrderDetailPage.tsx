@@ -27,6 +27,7 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { EmptyState } from "../ui/EmptyState";
 import type {
 	Order,
+	OrderDispute,
 	OrderItem,
 	OrderProviderSplitAllocation,
 	OrderStatus,
@@ -135,6 +136,7 @@ export function OrderDetailPage() {
 		<div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 			<BackToOrdersLink />
 			<OrderHeader order={order} onChanged={reload} />
+			<DisputeCard order={order} />
 			<ItemsCard items={items} />
 			<SplitSettlementCard order={order} />
 			<RefundCard order={order} items={items} onRefunded={reload} />
@@ -310,6 +312,49 @@ function ItemsCard({ items }: { items: OrderItem[] }) {
 					]}
 				/>
 			)}
+		</Card>
+	);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Disputes
+// ────────────────────────────────────────────────────────────────────────────
+
+const DISPUTE_LABEL: Record<OrderDispute["status"], string> = {
+	open: "Open",
+	won: "Won",
+	lost: "Lost",
+};
+
+function formatDeadline(iso?: string): string {
+	if (!iso) return "Not given";
+	const date = new Date(iso);
+	return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+function DisputeCard({ order }: { order: Order }) {
+	const disputes = order.disputes ?? [];
+	if (disputes.length === 0) return null;
+	const open = disputes.some((d) => d.status === "open");
+	return (
+		<Card title="Disputes">
+			{open && (
+				<Alert type="error" title="Don't ship until this is resolved">
+					The customer disputed this payment. Answer it in the {disputes[0]?.providerId}{" "}
+					dashboard before the deadline, or the customer usually gets the money back.
+				</Alert>
+			)}
+			<Table<OrderDispute>
+				data={disputes}
+				getRowKey={(d) => `${d.providerId}:${d.providerDisputeId}`}
+				columns={[
+					{ key: "status", header: "Status", render: (d) => DISPUTE_LABEL[d.status] },
+					{ key: "amount", header: "Amount", render: (d) => <MoneyDisplay value={d.amount} /> },
+					{ key: "due", header: "Answer by", render: (d) => formatDeadline(d.dueAt) },
+					{ key: "reason", header: "Reason", render: (d) => d.reason ?? "—" },
+					{ key: "id", header: "Dispute", render: (d) => d.providerDisputeId },
+				]}
+			/>
 		</Card>
 	);
 }

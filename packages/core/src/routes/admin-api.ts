@@ -791,7 +791,12 @@ function validateShippingZone(
 				) {
 					return { ok: false, error: "regions must be an array of strings" };
 				}
-				locations.push({ country: l.country, regions: l.regions as string[] });
+				const regions = [
+					...new Set((l.regions as string[]).map((r) => r.trim()).filter(Boolean)),
+				];
+				locations.push(
+					regions.length > 0 ? { country: l.country, regions } : { country: l.country },
+				);
 			} else {
 				locations.push({ country: l.country });
 			}
@@ -1167,8 +1172,7 @@ async function postSubscriptionAction(
 	action: string,
 	routeCtx: RouteContext,
 ): Promise<Response> {
-	const client = await loadStripeClient(ctx);
-	if (!client) return json({ error: "Stripe not configured" }, 500);
+	const client = (await loadStripeClient(ctx)) ?? undefined;
 	const body = (routeCtx.input ?? {}) as {
 		mode?: "immediate" | "at_period_end";
 		resumesAt?: number;
