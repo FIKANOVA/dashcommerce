@@ -20,7 +20,7 @@
  */
 
 import type { PluginContext, StorageCollection } from "emdash";
-import { releaseLock } from "../cart/lock";
+import { earlierPaidAttempt, recordPaidAttempt, releaseLock } from "../cart/lock";
 import { issueGrantsForOrder } from "../downloads/grant";
 import { decrementForOrderItem } from "../inventory/decrement";
 import { money, zero } from "../money";
@@ -306,6 +306,19 @@ export async function createOrderFromPaymentIntent(
 		});
 	}
 
+	// A replaced checkout attempt that was paid after another attempt of the
+	// same checkout already was (e.g. a pending mobile-money prompt approved
+	// late): the shopper paid twice. Keep the order, but hold it for review.
+	const duplicateOfOrderId = await earlierPaidAttempt(ctx, orderDraftId);
+	if (duplicateOfOrderId) {
+		ctx.log.error("Second payment for one checkout — order will be placed on-hold", {
+			paymentIntentId: pi.id,
+			orderDraftId,
+			duplicateOfOrderId,
+		});
+	}
+	const hold = integrityHold || duplicateOfOrderId !== null;
+
 	if (!cart.billingAddress || !cart.shippingAddress) {
 		throw new Error("Cart snapshot is missing billing or shipping address — cannot create order.");
 	}
@@ -358,7 +371,7 @@ export async function createOrderFromPaymentIntent(
 	const order: Order = {
 		id: orderId,
 		orderNumber,
-		status: integrityHold ? "on-hold" : "processing",
+		status: hold ? "on-hold" : "processing",
 		paymentStatus: "paid",
 		customerId: customer.id,
 		customerEmail: customer.email,
@@ -386,6 +399,7 @@ export async function createOrderFromPaymentIntent(
 		...(cart.notes ? { customerNote: cart.notes } : {}),
 		metadata: {
 			orderDraftId,
+			...(duplicateOfOrderId ? { duplicateOfOrderId } : {}),
 			...(integrityHold
 				? {
 						paymentAmountMismatch: !reconcile.amountOk,
@@ -407,6 +421,7 @@ export async function createOrderFromPaymentIntent(
 	// downstream code (stock, coupon usage, lock release, email) sees
 	// the number that actually landed on disk.
 	Object.assign(order, persistedOrder);
+	await recordPaidAttempt(ctx, orderDraftId, order.id);
 	await orderItemsStore(ctx).putMany(
 		items.map((it) => ({
 			id: it.id,
@@ -469,8 +484,9 @@ export async function createOrderFromPaymentIntent(
 
 	// (8) Digital download grants (no-op when no digital items present).
 	// Withhold grants when amount_received or currency does not match the
-	// cart — operator must review the on-hold order before releasing downloads.
-	if (!integrityHold) {
+	// cart, or the checkout was already paid — operator must review the
+	// on-hold order before releasing downloads.
+	if (!hold) {
 		try {
 			const issued = await issueGrantsForOrder(ctx, order, items);
 			if (issued.length > 0) {
@@ -485,6 +501,11 @@ export async function createOrderFromPaymentIntent(
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
+	} else if (duplicateOfOrderId) {
+		ctx.log.warn("Withholding download grants: checkout was already paid", {
+			orderId: order.id,
+			duplicateOfOrderId,
+		});
 	} else {
 		ctx.log.warn("Withholding download grants due to payment amount/currency mismatch", {
 			orderId: order.id,

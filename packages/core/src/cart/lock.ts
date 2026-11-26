@@ -116,6 +116,12 @@ export async function sumActiveLocksForProduct(
  * reserve the same units twice. The earlier attempt's order draft is kept,
  * so a payment that still completes on it creates its order as before.
  *
+ * A hold is kept even when no line manages stock: it is also the record
+ * of the shopper's current attempt (and its PaymentIntent), which the next
+ * attempt needs to find. Attempts that replace each other are linked, so
+ * order creation can tell when two of them were paid (see
+ * `earlierPaidAttempt`).
+ *
  * Two attempts racing for one shopper (two tabs) can each read the old
  * pointer before either writes; the loser's hold then lasts until its TTL.
  * That only over-reserves briefly; stock is still decremented once, at
@@ -129,13 +135,88 @@ export async function holdStock(
 	opts: { ttlMs?: number } = {},
 ): Promise<void> {
 	const previous = await ctx.kv.get<string>(holdKey(sessionId));
-	if (previous && previous !== orderDraftId) await deleteLock(ctx, previous);
-	if (entries.length > 0) {
-		await createLock(ctx, newLock(orderDraftId, sessionId, entries, opts));
-		await ctx.kv.set(holdKey(sessionId), orderDraftId);
-	} else if (previous) {
-		await ctx.kv.delete(holdKey(sessionId));
+	if (previous && previous !== orderDraftId) {
+		await linkAttempts(ctx, previous, orderDraftId);
+		await deleteLock(ctx, previous);
 	}
+	await createLock(ctx, newLock(orderDraftId, sessionId, entries, opts));
+	await ctx.kv.set(holdKey(sessionId), orderDraftId);
+}
+
+/** The shopper's current hold, if it is still active. */
+export async function currentHold(
+	ctx: PluginContext,
+	sessionId: string,
+): Promise<StockLock | null> {
+	const orderDraftId = await ctx.kv.get<string>(holdKey(sessionId));
+	if (!orderDraftId) return null;
+	const lock = await getLock(ctx, orderDraftId);
+	if (!lock || Date.parse(lock.expiresAt) <= Date.now()) return null;
+	return lock;
+}
+
+/** Record the PaymentIntent created for a held attempt. */
+export async function recordHoldPaymentIntent(
+	ctx: PluginContext,
+	orderDraftId: string,
+	paymentIntentId: string,
+): Promise<void> {
+	const lock = await getLock(ctx, orderDraftId);
+	if (lock) await createLock(ctx, { ...lock, stripePaymentIntentId: paymentIntentId });
+}
+
+/** Attempts that replaced one another share a group, named by the first. */
+function attemptKey(orderDraftId: string): string {
+	return `attempt:${orderDraftId}`;
+}
+
+function paidAttemptKey(group: string): string {
+	return `attempt-paid:${group}`;
+}
+
+async function linkAttempts(
+	ctx: PluginContext,
+	previousDraftId: string,
+	orderDraftId: string,
+): Promise<void> {
+	let group = await ctx.kv.get<string>(attemptKey(previousDraftId));
+	if (!group) {
+		group = previousDraftId;
+		await ctx.kv.set(attemptKey(previousDraftId), group);
+	}
+	await ctx.kv.set(attemptKey(orderDraftId), group);
+}
+
+/**
+ * The order already created for another attempt in this attempt's group,
+ * if any. A second paid attempt means the shopper was charged twice for
+ * one checkout.
+ */
+export async function earlierPaidAttempt(
+	ctx: PluginContext,
+	orderDraftId: string,
+): Promise<string | null> {
+	const group = await ctx.kv.get<string>(attemptKey(orderDraftId));
+	if (!group) return null;
+	return (await ctx.kv.get<string>(paidAttemptKey(group))) ?? null;
+}
+
+/**
+ * Remember which order paid for an attempt group, once the order is
+ * stored. Attempts that were never replaced have no group and write
+ * nothing. Two payments confirmed at the same moment can both miss each
+ * other; that window is a webhook round trip, not the minutes a pending
+ * payment takes.
+ */
+export async function recordPaidAttempt(
+	ctx: PluginContext,
+	orderDraftId: string,
+	orderId: string,
+): Promise<void> {
+	const group = await ctx.kv.get<string>(attemptKey(orderDraftId));
+	if (!group) return;
+	if (await ctx.kv.get<string>(paidAttemptKey(group))) return;
+	await ctx.kv.set(paidAttemptKey(group), orderId);
 }
 
 /**

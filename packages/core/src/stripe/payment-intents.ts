@@ -86,3 +86,22 @@ export async function retrievePaymentIntent(
 		client,
 	});
 }
+
+/**
+ * Cancel a PaymentIntent. Stripe allows it while the intent waits for a
+ * payment method, confirmation or action, and while some methods are
+ * processing; it refuses once the intent succeeded.
+ */
+export async function cancelPaymentIntent(
+	ctx: PluginContext,
+	id: string,
+	client: StripeClientOptions,
+): Promise<StripePaymentIntent> {
+	return call<StripePaymentIntent>(ctx, {
+		method: "POST",
+		path: `/payment_intents/${encodeURIComponent(id)}/cancel`,
+		params: { cancellation_reason: "abandoned" },
+		idempotencyKey: `cancel:${id}`,
+		client,
+	});
+}
