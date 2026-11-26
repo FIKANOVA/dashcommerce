@@ -11,6 +11,7 @@
 
 import type { PluginContext } from "emdash";
 import type { Order, OrderItem } from "../types";
+import { taxRows } from "../astro/tax-rows";
 import { formatMoney, greet } from "./format";
 import { escapeHtml, renderHtml } from "./layout";
 
@@ -50,8 +51,8 @@ export function composeOrderReceipt(input: ComposeReceiptInput): ComposedEmail {
 	if (order.shippingTotal.amount > 0) {
 		textLines.push(`Shipping: ${formatMoney(order.shippingTotal)}`);
 	}
-	if (order.taxTotal.amount > 0) {
-		textLines.push(`Tax: ${formatMoney(order.taxTotal)}`);
+	for (const row of taxRows(order.taxLines, order.taxTotal)) {
+		textLines.push(`${row.label}: ${formatMoney(row.amount)}`);
 	}
 	textLines.push(`Total: ${formatMoney(order.total)}`);
 	if (viewOrderUrl) {
@@ -83,9 +84,9 @@ export function composeOrderReceipt(input: ComposeReceiptInput): ComposedEmail {
 			`<tr><td>Shipping</td><td class="amt">${escapeHtml(formatMoney(order.shippingTotal))}</td></tr>`,
 		);
 	}
-	if (order.taxTotal.amount > 0) {
+	for (const row of taxRows(order.taxLines, order.taxTotal)) {
 		totalRows.push(
-			`<tr><td>Tax</td><td class="amt">${escapeHtml(formatMoney(order.taxTotal))}</td></tr>`,
+			`<tr><td>${escapeHtml(row.label)}</td><td class="amt">${escapeHtml(formatMoney(row.amount))}</td></tr>`,
 		);
 	}
 	totalRows.push(
