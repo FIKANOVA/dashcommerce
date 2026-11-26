@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { type TaxLineLike, taxRows } from "../tax-rows";
 import CouponBox, { type AppliedCoupon } from "./CouponBox";
 
 interface Money {
@@ -33,6 +34,7 @@ interface CartState {
 	discountTotal: Money;
 	shippingTotal: Money;
 	taxTotal: Money;
+	taxLines?: TaxLineLike[];
 	total: Money;
 	currency: string;
 }
@@ -284,12 +286,12 @@ export default function CartPageIsland({
 						<span>{formatMoney(cart.shippingTotal, locale)}</span>
 					</div>
 				)}
-				{cart.taxTotal.amount > 0 && (
-					<div className="dc-total-row">
-						<span>Tax</span>
-						<span>{formatMoney(cart.taxTotal, locale)}</span>
+				{taxRows(cart.taxLines, cart.taxTotal).map((row, i) => (
+					<div className="dc-total-row" key={`${i}-${row.label}`}>
+						<span>{row.label}</span>
+						<span>{formatMoney(row.amount, locale)}</span>
 					</div>
-				)}
+				))}
 				<div className="dc-total-row dc-total-row-grand">
 					<strong>Total</strong>
 					<strong>{formatMoney(cart.total, locale)}</strong>

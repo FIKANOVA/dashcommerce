@@ -12,7 +12,10 @@
  */
 
 import { add, money, mul, percent as pct, sub, sum, zero } from "../money";
-import type { AppliedCoupon, CartLineItem, CartState, Money, TaxLine } from "../types";
+import type { Address, AppliedCoupon, CartLineItem, CartState, Money, TaxLine } from "../types";
+
+/** The parts of an address table tax matches on. */
+export type TaxAddress = Pick<Address, "country" | "region" | "postalCode">;
 
 export interface PricingPolicy {
 	taxMode: "flat" | "table" | "stripe_tax";
@@ -23,6 +26,8 @@ export interface PricingPolicy {
 		base: Money;
 		currency: string;
 		shippingClassesInCart: string[];
+		/** Where the order goes: the shipping address, or billing for digital carts. */
+		address?: TaxAddress;
 	}) => TaxLine[];
 }
 
@@ -51,6 +56,7 @@ export function computeTax(
 	taxableAmount: Money,
 	shipping: Money,
 	policy: PricingPolicy,
+	address?: TaxAddress,
 ): { lines: TaxLine[]; total: Money } {
 	if (taxableAmount.amount < 0) {
 		return { lines: [], total: zero(taxableAmount.currency) };
@@ -60,7 +66,7 @@ export function computeTax(
 		const rate = policy.flatTaxPercent ?? 0;
 		if (rate === 0) return { lines: [], total: zero(base.currency) };
 		const amount = pct(base, rate);
-		const line: TaxLine = { label: "Sales tax", amount, rate };
+		const line: TaxLine = { label: "Tax", amount, rate };
 		return { lines: [line], total: amount };
 	}
 	if (policy.taxMode === "table" && policy.taxResolver) {
@@ -68,6 +74,7 @@ export function computeTax(
 			base,
 			currency: base.currency,
 			shippingClassesInCart: [],
+			address,
 		});
 		const total = lines.length
 			? sum(
@@ -92,7 +99,12 @@ export function recalculate(cart: CartState, policy: PricingPolicy = { taxMode: 
 	const discountTotal = computeDiscountTotal(cart.coupons, cc);
 	const taxable = sub(subtotal, discountTotal);
 	const shippingTotal = computeShippingTotal(cart);
-	const { lines, total: taxTotal } = computeTax(taxable, shippingTotal, policy);
+	const { lines, total: taxTotal } = computeTax(
+		taxable,
+		shippingTotal,
+		policy,
+		cart.shippingAddress ?? cart.billingAddress,
+	);
 	const total = add(add(sub(subtotal, discountTotal), shippingTotal), taxTotal);
 	return {
 		...cart,

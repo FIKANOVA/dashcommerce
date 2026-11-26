@@ -43,6 +43,7 @@ import {
 } from "../stripe/checkout-sessions";
 import type { StripeClientOptions } from "../stripe/client";
 import { createPaymentIntent } from "../stripe/payment-intents";
+import { loadTableTaxResolver } from "../tax/rates";
 import type { CartLineItem, CartState, StockLockEntry } from "../types";
 import { randomId } from "../util/ids";
 import { getPublicSiteUrl } from "../util/site-url";
@@ -62,6 +63,7 @@ async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 		taxAppliesToShipping: onShipping,
 	};
 	if (policy.taxMode === "flat") policy.flatTaxPercent = pct;
+	if (policy.taxMode === "table") policy.taxResolver = await loadTableTaxResolver(ctx);
 	return policy;
 }
 
