@@ -24,6 +24,8 @@ const checkoutModeSetting = (await getPluginSetting("dashcommerce", "checkoutMod
   | null
   | undefined;
 const checkoutMode: "hosted" | "embedded" = checkoutModeSetting ?? "hosted";
+// Where the shop is based (Settings → Store). Checkout starts on it.
+const storeCountry = ((await getPluginSetting("dashcommerce", "storeCountry")) as string | null | undefined) ?? undefined;
 
 // The active payment provider: Stripe unless another one is chosen in
 // DashCommerce settings. Gateway packages register themselves at runtime
@@ -107,6 +109,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
           providerLabel={providerLabel}
           collectsDetails={provider?.collectsCustomerDetails === true}
           onPage={checkoutMode === "embedded" && provider?.checkoutStyles?.includes("on_page") === true}
+          defaultCountry={storeCountry}
         />
       )}
 
@@ -159,7 +162,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
             </div>
             <label class="co-label">
               <span>Country <small>(ISO-2 code)</small></span>
-              <input required id="country" value="US" maxlength="2" autocomplete="shipping country" />
+              <input required id="country" value={storeCountry ?? "US"} maxlength="2" autocomplete="shipping country" />
             </label>
           </fieldset>
 
@@ -201,7 +204,7 @@ const canceled = Astro.url.searchParams.get("canceled") === "1";
             </div>
             <label class="co-label">
               <span>Country <small>(ISO-2 code)</small></span>
-              <input id="bCountry" value="US" maxlength="2" autocomplete="billing country" />
+              <input id="bCountry" value={storeCountry ?? "US"} maxlength="2" autocomplete="billing country" />
             </label>
           </fieldset>
 

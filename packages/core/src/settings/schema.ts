@@ -8,6 +8,7 @@
  * need to understand the internal coercion rules — they only check `ok`.
  */
 
+import { isValidCountryCode } from "../data/countries";
 import { isValidCurrencyCode, normalizeCurrencyList } from "../data/currencies";
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -59,6 +60,7 @@ function asStringWithPrefix(v: unknown, key: string, prefixes: string[]): Result
 
 export const SETTINGS_KEYS = [
 	"defaultCurrency",
+	"storeCountry",
 	"enabledCurrencies",
 	"taxMode",
 	"flatTaxRatePercent",
@@ -124,6 +126,15 @@ export function validateSettingsKey(
 			const code = value.toUpperCase();
 			if (!isValidCurrencyCode(code)) {
 				return bad(`defaultCurrency ${value} is not a valid ISO-4217 code`);
+			}
+			return ok(code);
+		}
+		case "storeCountry": {
+			// Where the shop is based: checkout starts on this country.
+			if (typeof value !== "string") return bad("storeCountry must be a string");
+			const code = value.trim().toUpperCase();
+			if (!isValidCountryCode(code)) {
+				return bad(`storeCountry ${value} is not a valid ISO 3166-1 alpha-2 code`);
 			}
 			return ok(code);
 		}
