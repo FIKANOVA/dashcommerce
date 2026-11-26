@@ -370,7 +370,9 @@ export const paystackPaymentProvider: PaymentProvider = {
 	id: "paystack",
 	label: "Paystack",
 	capabilities: {
-		coupons: false,
+		// Core works out the discount and sends Paystack the cart total after
+		// it, so Paystack charges the right amount without its own coupons.
+		coupons: true,
 		connect: false,
 		subscriptions: false,
 	},
