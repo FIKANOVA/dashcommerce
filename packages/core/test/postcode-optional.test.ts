@@ -4,6 +4,8 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { RouteContext } from "emdash";
 import {
 	createMockPaymentProvider,
@@ -113,5 +115,21 @@ describe("checkout/create-session with a shipped cart", () => {
 		);
 		expect(res.status).toBe(409);
 		expect(String(res.body.error)).toMatch(/country/i);
+	});
+});
+
+describe("the starter's embedded checkout form", () => {
+	const form = readFileSync(
+		fileURLToPath(new URL("../../starter/src/pages/checkout.astro", import.meta.url)),
+		"utf8",
+	);
+
+	it("marks both postcode fields optional and requires neither", () => {
+		expect(form).toContain('<input id="postalCode" autocomplete="shipping postal-code" />');
+		expect(form).toContain('<input id="bPostalCode" autocomplete="billing postal-code" />');
+		expect(form.match(/Postal code <small>\(optional\)<\/small>/g)?.length).toBe(2);
+		const required = form.match(/const required = \[([^\]]*)\]/)?.[1] ?? "";
+		expect(required).toContain('"bCountry"');
+		expect(required).not.toContain("bPostalCode");
 	});
 });
