@@ -6,6 +6,12 @@ import CheckoutSidebarIsland from "../islands/CheckoutSidebarIsland.tsx";
 interface Props {
 	locale?: string;
 	/**
+	 * List the shipping options to choose from (default). Pass `false` when
+	 * the checkout form has its own shipping step, such as HostedCheckoutForm;
+	 * the summary then shows the chosen option in its totals.
+	 */
+	shippingPicker?: boolean;
+	/**
 	 * Show the coupon box (default). Pass `false` when the payment is set up
 	 * before the customer presses Pay (Stripe Elements), so a code applied
 	 * afterwards can't show a discount that isn't charged.
@@ -13,6 +19,11 @@ interface Props {
 	couponEntry?: boolean;
 }
 
-const { locale, couponEntry = true } = Astro.props;
+const { locale, shippingPicker = true, couponEntry = true } = Astro.props;
 ---
-<CheckoutSidebarIsland client:load locale={locale} couponEntry={couponEntry} />
+<CheckoutSidebarIsland
+	client:load
+	locale={locale}
+	shippingPicker={shippingPicker}
+	couponEntry={couponEntry}
+/>

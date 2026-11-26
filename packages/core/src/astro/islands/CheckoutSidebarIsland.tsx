@@ -3,6 +3,10 @@
  * available shipping methods (once an address is on the cart), lets
  * the user pick a method and apply a coupon, and renders running totals.
  *
+ * With `shippingPicker={false}` the summary leaves choosing to the
+ * checkout form's own shipping step and shows the chosen option in the
+ * totals instead, so the options aren't listed twice.
+ *
  * Listens for `dashcommerce:cart-updated` and refetches on every
  * update so the totals stay in sync with payment-form state changes
  * the host page may trigger.
@@ -56,8 +60,39 @@ function formatMoney(m: Money | null | undefined, locale = "en-US") {
 	}
 }
 
+/** Whether the summary lists shipping options to choose from. */
+export function showsShippingOptions(
+	shippingPicker: boolean,
+	hasAddress: boolean,
+	optionCount: number,
+): boolean {
+	return shippingPicker && hasAddress && optionCount > 0;
+}
+
+/**
+ * The summary's shipping row. With the picker off it names the chosen
+ * option, and a zero-priced one reads "Free"; otherwise it's a plain
+ * "Shipping" row, shown only when shipping costs something.
+ */
+export function shippingTotalRow(
+	shippingPicker: boolean,
+	method: { label: string } | undefined,
+	total: Money,
+	format: (m: Money) => string,
+): { label: string; value: string } | null {
+	if (!shippingPicker && method) {
+		return { label: `Shipping · ${method.label}`, value: total.amount > 0 ? format(total) : "Free" };
+	}
+	return total.amount > 0 ? { label: "Shipping", value: format(total) } : null;
+}
+
 export interface CheckoutSidebarIslandProps {
 	locale?: string;
+	/**
+	 * List the shipping options to choose from (default). Turn off when the
+	 * checkout form has its own shipping step, such as `HostedCheckoutForm`.
+	 */
+	shippingPicker?: boolean;
 	/**
 	 * Show the coupon box (default). Turn off when the payment is set up
 	 * before the customer presses Pay, as with Stripe Elements: a code
@@ -70,6 +105,7 @@ export interface CheckoutSidebarIslandProps {
 
 export default function CheckoutSidebarIsland({
 	locale = "en-US",
+	shippingPicker = true,
 	couponEntry = true,
 }: CheckoutSidebarIslandProps) {
 	const [cart, setCart] = useState<CartState | null>(null);
@@ -87,7 +123,7 @@ export default function CheckoutSidebarIsland({
 			const body = (await res.json()) as { cart: CartState };
 			setCart(body.cart);
 			setError(null);
-			if (body.cart.shippingAddress) {
+			if (shippingPicker && body.cart.shippingAddress) {
 				const mRes = await fetch(`${API}/cart/shipping-methods`, {
 					credentials: "include",
 				});
@@ -99,7 +135,7 @@ export default function CheckoutSidebarIsland({
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Network error");
 		}
-	}, []);
+	}, [shippingPicker]);
 
 	useEffect(() => {
 		reload();
@@ -166,7 +202,7 @@ export default function CheckoutSidebarIsland({
 				))}
 			</ul>
 
-			{Boolean(cart.shippingAddress) && methods.length > 0 && (
+			{showsShippingOptions(shippingPicker, Boolean(cart.shippingAddress), methods.length) && (
 				<section className="dc-sidebar-shipping">
 					<h4>Shipping</h4>
 					<ul>
@@ -213,12 +249,17 @@ export default function CheckoutSidebarIsland({
 						<span>−{formatMoney(cart.discountTotal, locale)}</span>
 					</div>
 				)}
-				{cart.shippingTotal.amount > 0 && (
-					<div className="dc-row">
-						<span>Shipping</span>
-						<span>{formatMoney(cart.shippingTotal, locale)}</span>
-					</div>
-				)}
+				{(() => {
+					const row = shippingTotalRow(shippingPicker, cart.shippingMethod, cart.shippingTotal, (m) =>
+						formatMoney(m, locale),
+					);
+					return row ? (
+						<div className="dc-row">
+							<span>{row.label}</span>
+							<span>{row.value}</span>
+						</div>
+					) : null;
+				})()}
 				{taxRows(cart.taxLines, cart.taxTotal).map((row, i) => (
 					<div className="dc-row" key={`${i}-${row.label}`}>
 						<span>{row.label}</span>
