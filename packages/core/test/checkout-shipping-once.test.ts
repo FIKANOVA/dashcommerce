@@ -59,8 +59,8 @@ describe("wiring", () => {
 		expect(read("../src/astro/components/CheckoutSidebar.astro")).toContain(
 			"shippingPicker={shippingPicker}",
 		);
-		expect(read("../../starter/src/pages/checkout.astro")).toContain(
-			"<CheckoutSidebar shippingPicker={useStripeElements} />",
+		expect(read("../../starter/src/pages/checkout.astro")).toMatch(
+			/<CheckoutSidebar[^>]*shippingPicker=\{useStripeElements\}/,
 		);
 	});
 });
