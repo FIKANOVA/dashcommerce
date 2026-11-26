@@ -72,15 +72,19 @@ export async function listActiveLocks(ctx: PluginContext): Promise<StockLock[]> 
 /**
  * Sum of currently-locked units for a given product (optionally variant).
  * Used by checkout to compute available-to-sell = stock − sumActiveLocks.
+ * Pass `excludeSessionId` so a shopper's own earlier hold doesn't count
+ * against them when they press Pay again.
  */
 export async function sumActiveLocksForProduct(
 	ctx: PluginContext,
 	productId: string,
 	variantId?: string,
+	opts: { excludeSessionId?: string } = {},
 ): Promise<number> {
 	const locks = await listActiveLocks(ctx);
 	let total = 0;
 	for (const lock of locks) {
+		if (opts.excludeSessionId && lock.sessionId === opts.excludeSessionId) continue;
 		for (const entry of lock.entries) {
 			if (entry.productId !== productId) continue;
 			if (variantId !== undefined && entry.variantId !== variantId) continue;
@@ -89,6 +93,35 @@ export async function sumActiveLocksForProduct(
 		}
 	}
 	return total;
+}
+
+/** The shopper's current hold, so a new attempt can replace it. */
+function holdKey(sessionId: string): string {
+	return `hold:${sessionId}`;
+}
+
+/**
+ * Hold stock for a new checkout attempt. A shopper has one hold at a
+ * time: their previous attempt's hold is released, so pressing Pay again
+ * (after closing a payment popup, a decline, or a cart change) doesn't
+ * reserve the same units twice. The earlier attempt's order draft is kept,
+ * so a payment that still completes on it creates its order as before.
+ */
+export async function holdStock(
+	ctx: PluginContext,
+	orderDraftId: string,
+	sessionId: string,
+	entries: StockLock["entries"],
+	opts: { ttlMs?: number } = {},
+): Promise<void> {
+	const previous = await ctx.kv.get<string>(holdKey(sessionId));
+	if (previous && previous !== orderDraftId) await deleteLock(ctx, previous);
+	if (entries.length > 0) {
+		await createLock(ctx, newLock(orderDraftId, sessionId, entries, opts));
+		await ctx.kv.set(holdKey(sessionId), orderDraftId);
+	} else if (previous) {
+		await ctx.kv.delete(holdKey(sessionId));
+	}
 }
 
 /**

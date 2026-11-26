@@ -17,7 +17,7 @@
 
 import type { PluginContext, RouteContext } from "emdash";
 import { type PricingPolicy, recalculate } from "../cart/calculate";
-import { createLock, newLock, sumActiveLocksForProduct } from "../cart/lock";
+import { holdStock, sumActiveLocksForProduct } from "../cart/lock";
 import { getCart, save } from "../cart/store";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { money, zero } from "../money";
@@ -152,6 +152,7 @@ async function repriceAndCheckStock(ctx: PluginContext, cart: CartState): Promis
 				ctx,
 				line.productId,
 				line.variantId ?? undefined,
+				{ excludeSessionId: cart.sessionId },
 			);
 			const available = onHand - locked;
 			if (line.quantity > available && fields.backorders === "no") {
@@ -300,17 +301,12 @@ export const checkoutRoutes = {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
-			await save(ctx, recalculated);
+			const savedCart = await save(ctx, recalculated);
 
 			const orderDraftId = randomId();
 
-			// Stock soft-lock.
-			if (stockEntries.length > 0) {
-				await createLock(
-					ctx,
-					newLock(orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS }),
-				);
-			}
+			// Stock soft-lock (replaces this shopper's earlier hold).
+			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS });
 
 			// Snapshot for webhook replay.
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
@@ -395,6 +391,8 @@ export const checkoutRoutes = {
 					orderDraftId,
 					total: recalculated.total,
 					currency: recalculated.currency,
+					// Lets the payment form reuse this intent while the cart is unchanged.
+					cartUpdatedAt: savedCart.updatedAt,
 				}),
 				{ status: 200, headers: { "Content-Type": "application/json" } },
 			);
@@ -561,12 +559,7 @@ export const checkoutRoutes = {
 
 			const orderDraftId = randomId();
 
-			if (stockEntries.length > 0) {
-				await createLock(
-					ctx,
-					newLock(orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS }),
-				);
-			}
+			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS });
 
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
 				cart: recalculated,
