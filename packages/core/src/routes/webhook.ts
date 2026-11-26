@@ -289,11 +289,6 @@ async function loadStripeClient(ctx: PluginContext): Promise<StripeClientOptions
 	return { secretKey: secret };
 }
 
-type OrdersStore = StorageCollection<Order>;
-function ordersStore(ctx: PluginContext): OrdersStore {
-	return (ctx.storage as unknown as { orders: OrdersStore }).orders;
-}
-
 type CustomersStore = StorageCollection<Customer>;
 function customersStore(ctx: PluginContext): CustomersStore {
 	return (ctx.storage as unknown as { customers: CustomersStore }).customers;
