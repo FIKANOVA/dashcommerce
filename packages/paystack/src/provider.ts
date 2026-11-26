@@ -10,14 +10,18 @@
 
 import type {
 	ConnectionCheckResult,
+	CreatePayoutAccountInput,
 	CreateRefundInput,
+	CreatedPayoutAccount,
 	InitCheckoutInput,
 	InitCheckoutResult,
 	NormalizedPaymentEvent,
 	PaymentProvider,
+	PaymentProviderBank,
 	PaymentProviderCredentials,
 	PaymentProviderRuntimeContext,
 	RefundResult,
+	ResolvePayoutAccountInput,
 	VerifyWebhookInput,
 	VerifyWebhookResult,
 } from "@dashcommerce/core/payment-provider";
@@ -124,6 +128,14 @@ interface PaystackWebhookEvent {
 			[key: string]: unknown;
 		};
 		gateway_response?: string;
+		/** Present when the payment was split: what each party was paid. */
+		split?: {
+			shares?: {
+				paystack?: number;
+				integration?: number;
+				subaccounts?: Array<{ amount?: number; subaccount_code?: string }>;
+			};
+		};
 	};
 }
 
@@ -367,6 +379,161 @@ function refundEvent(
 	};
 }
 
+/**
+ * Core's allocations are exact minor-unit shares, so they become a flat
+ * split passed with this one payment: each vendor's subaccount gets its
+ * share, and the shop keeps the rest and pays Paystack's fee
+ * (`bearer_type: "account"`), as with Stripe Connect. Validated first: a
+ * bad share must fail checkout rather than settle everything to the shop.
+ */
+function splitFor(input: InitCheckoutInput):
+	| {
+			type: "flat";
+			bearer_type: "account";
+			subaccounts: Array<{ subaccount: string; share: number }>;
+	  }
+	| undefined {
+	if (!input.allocations || input.allocations.length === 0) return undefined;
+	let total = 0;
+	const subaccounts = input.allocations.map((allocation) => {
+		const subaccount = allocation.accountReference?.trim();
+		if (!subaccount) {
+			throw new Error(`Vendor ${allocation.vendorId} has no Paystack subaccount code`);
+		}
+		if (!Number.isSafeInteger(allocation.amountMinor) || allocation.amountMinor <= 0) {
+			throw new Error(
+				`Vendor ${allocation.vendorId}'s split amount must be a positive integer in minor units`,
+			);
+		}
+		total += allocation.amountMinor;
+		if (!Number.isSafeInteger(total)) {
+			throw new Error("Split allocations exceed the safe integer range");
+		}
+		return { subaccount, share: allocation.amountMinor };
+	});
+	if (total > input.amount) {
+		throw new Error(`Split allocations (${total}) exceed the checkout amount (${input.amount})`);
+	}
+	return { type: "flat", bearer_type: "account", subaccounts };
+}
+
+/** What each party was paid, from `charge.success` `split.shares`. */
+function splitSettlementFrom(
+	split: PaystackWebhookEvent["data"]["split"],
+	currency: string,
+):
+	| {
+			allocations: Array<{ accountReference: string; amountMinor: number }>;
+			platformRemainderMinor?: number;
+			providerFeeMinor?: number;
+			currency: string;
+			raw: unknown;
+	  }
+	| undefined {
+	const shares = split?.shares;
+	if (!shares || !Array.isArray(shares.subaccounts)) return undefined;
+	const allocations = shares.subaccounts
+		.filter(
+			(s): s is { amount: number; subaccount_code: string } =>
+				typeof s?.subaccount_code === "string" &&
+				s.subaccount_code !== "" &&
+				Number.isSafeInteger(s.amount),
+		)
+		.map((s) => ({ accountReference: s.subaccount_code, amountMinor: s.amount }));
+	if (allocations.length === 0) return undefined;
+	return {
+		allocations,
+		...(Number.isSafeInteger(shares.integration)
+			? { platformRemainderMinor: shares.integration as number }
+			: {}),
+		...(Number.isSafeInteger(shares.paystack)
+			? { providerFeeMinor: shares.paystack as number }
+			: {}),
+		currency,
+		raw: split,
+	};
+}
+
+interface PaystackBankRow {
+	code?: string;
+	name?: string;
+	active?: boolean;
+}
+
+interface PaystackBankPage {
+	data: PaystackBankRow[];
+	meta?: Record<string, unknown>;
+}
+
+/** Paystack's `country` filter for the bank list, by ISO-2 code. */
+const PAYSTACK_COUNTRY: Record<string, string> = {
+	GH: "ghana",
+	KE: "kenya",
+	NG: "nigeria",
+	ZA: "south africa",
+};
+
+/** Each payout country's own currency, for the mobile-money list. */
+const COUNTRY_CURRENCY: Record<string, string> = { GH: "GHS", KE: "KES", NG: "NGN", ZA: "ZAR" };
+
+/** The country a Paystack account is in, from its balance currencies. */
+const CURRENCY_COUNTRY: Record<string, string> = { GHS: "GH", KES: "KE", NGN: "NG", ZAR: "ZA" };
+
+/**
+ * Countries this Paystack account can pay vendors in. Subaccounts must be in
+ * the account's own country, so a Kenyan shop pays Kenyan banks and mobile
+ * money only. Worked out from the account's balance currencies (USD is
+ * ignored; Kenyan and Nigerian accounts can hold it too). Returns `null`
+ * when the key may not read the balance (a restricted key, say), and the
+ * caller then doesn't restrict: Paystack still refuses a wrong-country
+ * subaccount itself.
+ */
+async function accountPayoutCountries(
+	ctx: PaymentProviderRuntimeContext,
+	credentials: PaymentProviderCredentials,
+): Promise<string[] | null> {
+	try {
+		const balances = await call<Array<{ currency?: string }>>(ctx, {
+			client: toPaystackClient(credentials),
+			method: "GET",
+			path: "/balance",
+		});
+		const countries = new Set<string>();
+		for (const row of Array.isArray(balances) ? balances : []) {
+			const country = CURRENCY_COUNTRY[row?.currency?.toUpperCase() ?? ""];
+			if (country) countries.add(country);
+		}
+		return countries.size > 0 ? Array.from(countries) : null;
+	} catch {
+		return null;
+	}
+}
+
+const COUNTRY_NAME: Record<string, string> = {
+	GH: "Ghana",
+	KE: "Kenya",
+	NG: "Nigeria",
+	ZA: "South Africa",
+};
+
+async function assertPayoutCountry(
+	ctx: PaymentProviderRuntimeContext,
+	iso: string,
+	credentials: PaymentProviderCredentials,
+): Promise<void> {
+	const allowed = await accountPayoutCountries(ctx, credentials);
+	if (allowed && !allowed.includes(iso)) {
+		const names = allowed.map((c) => COUNTRY_NAME[c] ?? c).join(", ");
+		throw new Error(
+			`This Paystack account pays vendors in ${names} only. Choose ${allowed.join(" or ")} as the vendor's country.`,
+		);
+	}
+}
+
+function lastFour(accountNumber: string): string {
+	return `****${accountNumber.slice(-4)}`;
+}
+
 export const paystackPaymentProvider: PaymentProvider = {
 	id: "paystack",
 	label: "Paystack",
@@ -376,6 +543,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		coupons: true,
 		connect: false,
 		subscriptions: false,
+		splits: true,
 	},
 
 	logo: PAYSTACK_LOGO,
@@ -427,6 +595,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 
 		const client = toPaystackClient(credentials);
 		const channels = mapChannels(input.preferredChannels);
+		const split = splitFor(input);
 		const checkoutRef = paystackReferenceFor(input.orderDraftId);
 
 		let data: PaystackInitializeData;
@@ -445,6 +614,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 						orderDraftId: input.orderDraftId,
 					},
 					...(channels ? { channels } : {}),
+					...(split ? { split } : {}),
 				},
 			});
 		} catch (err) {
@@ -528,6 +698,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 			const rawChannel = d.channel ?? d.authorization?.channel;
 			const displayChannel =
 				rawChannel === "mobile_money" ? "M-Pesa" : rawChannel === "card" ? "Card" : rawChannel;
+			const splitSettlement = splitSettlementFrom(d.split, d.currency.toUpperCase());
 
 			return {
 				type: "charge.succeeded",
@@ -553,6 +724,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 					...(d.customer?.phone ? { phone: d.customer.phone } : {}),
 				},
 				...(displayChannel ? { channel: displayChannel } : {}),
+				...(splitSettlement ? { splitSettlement } : {}),
 				raw: event,
 			};
 		}
@@ -699,6 +871,144 @@ export const paystackPaymentProvider: PaymentProvider = {
 			status: REFUND_STATUS[data.status] ?? "pending",
 			amount: data.amount,
 			currency: (data.currency ?? input.currency).toUpperCase(),
+		};
+	},
+
+	/**
+	 * Banks and mobile money a vendor can be paid out to, in the account's own
+	 * country only. Mobile money is whatever Paystack lists for that country:
+	 * M-PESA, Airtel and Telkom in Kenya; MTN, AirtelTigo and Vodafone in Ghana.
+	 */
+	async listPayoutBanks(
+		ctx: PaymentProviderRuntimeContext,
+		country: string,
+		credentials: PaymentProviderCredentials,
+	): Promise<PaymentProviderBank[]> {
+		const iso = country?.trim().toUpperCase();
+		const paystackCountry = PAYSTACK_COUNTRY[iso];
+		if (!paystackCountry) {
+			throw new Error(
+				`Paystack pays out to banks in ${Object.keys(PAYSTACK_COUNTRY).join(", ")} only`,
+			);
+		}
+		await assertPayoutCountry(ctx, iso, credentials);
+		const client = toPaystackClient(credentials);
+		const lists = [
+			`country=${encodeURIComponent(paystackCountry)}`,
+			`currency=${COUNTRY_CURRENCY[iso]}&type=mobile_money`,
+		];
+		const banks = new Map<string, PaymentProviderBank>();
+		for (const filter of lists) {
+			let next: string | null = null;
+			do {
+				const page: PaystackBankPage = await callEnvelope<PaystackBankRow[]>(ctx, {
+					client,
+					method: "GET",
+					path: `/bank?${filter}&perPage=100&use_cursor=true${next ? `&next=${encodeURIComponent(next)}` : ""}`,
+				});
+				for (const bank of page.data ?? []) {
+					const code = bank?.code?.trim();
+					const name = bank?.name?.trim();
+					if (code && name && bank.active !== false && !banks.has(code)) {
+						banks.set(code, { code, name });
+					}
+				}
+				const cursor: unknown = page.meta?.next;
+				next = typeof cursor === "string" && cursor !== "" ? cursor : null;
+			} while (next);
+		}
+		return Array.from(banks.values());
+	},
+
+	async resolvePayoutAccount(
+		ctx: PaymentProviderRuntimeContext,
+		input: ResolvePayoutAccountInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<{ accountName: string }> {
+		const accountNumber = input.accountNumber?.trim();
+		const bankCode = input.bankCode?.trim();
+		if (!accountNumber || !bankCode) {
+			throw new Error("Paystack account lookup needs an account number and a bank");
+		}
+		const data = await call<{ account_name?: string }>(ctx, {
+			client: toPaystackClient(credentials),
+			method: "GET",
+			path: `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+		});
+		const accountName = data?.account_name?.trim();
+		if (!accountName) {
+			throw new Error("Paystack returned no account name for that account");
+		}
+		return { accountName };
+	},
+
+	/**
+	 * A Paystack subaccount for the vendor. Its `percentage_charge` is only
+	 * the default for payments without a split; DashCommerce sends each
+	 * vendor's exact share with every payment.
+	 */
+	async createPayoutAccount(
+		ctx: PaymentProviderRuntimeContext,
+		input: CreatePayoutAccountInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<CreatedPayoutAccount> {
+		const accountNumber = input.accountNumber?.trim();
+		const bankCode = input.bankCode?.trim();
+		const businessName = input.businessName?.trim();
+		const businessEmail = input.businessEmail?.trim();
+		const businessMobile = input.businessMobile?.trim();
+		if (!accountNumber || !bankCode || !businessName) {
+			throw new Error(
+				"Paystack subaccount creation needs the account number, bank and business name",
+			);
+		}
+		if ((input.splitType ?? "percentage") !== "percentage") {
+			throw new Error(
+				"Paystack subaccounts take a percentage default. Choose a percentage split for Paystack.",
+			);
+		}
+		const fraction = input.splitValue ?? 0.1;
+		if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) {
+			throw new Error("The percentage split is a decimal from 0 to 1");
+		}
+		const country = input.country?.trim().toUpperCase();
+		if (country) await assertPayoutCountry(ctx, country, credentials);
+
+		const data = await call<{
+			subaccount_code?: string;
+			account_name?: string;
+			settlement_bank?: string;
+			account_number?: string;
+			/** Paystack creates subaccounts unverified, then verifies them later. */
+			is_verified?: boolean;
+		}>(ctx, {
+			client: toPaystackClient(credentials),
+			path: "/subaccount",
+			body: {
+				business_name: businessName,
+				settlement_bank: bankCode,
+				account_number: accountNumber,
+				percentage_charge: Math.round(fraction * 10000) / 100,
+				...(businessEmail ? { primary_contact_email: businessEmail } : {}),
+				...(businessMobile ? { primary_contact_phone: businessMobile } : {}),
+				...(input.businessContact ? { primary_contact_name: input.businessContact } : {}),
+				...(input.metadata ? { metadata: JSON.stringify(input.metadata) } : {}),
+			},
+		});
+
+		const accountReference = data?.subaccount_code?.trim();
+		if (!accountReference) {
+			throw new Error("Paystack returned no subaccount code");
+		}
+		return {
+			accountReference,
+			accountName: data.account_name?.trim() || businessName,
+			...(data.settlement_bank ? { bankName: data.settlement_bank } : {}),
+			bankCode,
+			...(input.country ? { country: input.country.trim().toUpperCase() } : {}),
+			maskedAccountNumber: lastFour(accountNumber),
+			// Usable at once; core shows "unverified" until Paystack verifies it.
+			...(typeof data.is_verified === "boolean" ? { verified: data.is_verified } : {}),
 		};
 	},
 

@@ -17,7 +17,6 @@ import type {
 	Customer,
 	Order,
 	OrderItem,
-	ProductFields,
 	Refund,
 	Review,
 	ShippingClass,
@@ -27,6 +26,7 @@ import type {
 	Subscription,
 	TaxRate,
 	Vendor,
+	VendorPaymentAccount,
 	VendorPayout,
 } from "../types";
 import { refundOrder } from "../orders/refund";
@@ -112,12 +112,34 @@ async function requireConnectEnabled(ctx: PluginContext): Promise<boolean> {
 	return (await ctx.kv.get<boolean>("settings:connectEnabled")) === true;
 }
 
+/**
+ * Vendor routes are useful when either Stripe Connect is on or a registered
+ * provider can split a payment across vendor accounts (Flutterwave
+ * subaccounts). The Stripe-only onboarding, refresh and payout routes still
+ * require Connect itself.
+ */
+async function requireVendorRoutesEnabled(ctx: PluginContext): Promise<boolean> {
+	if (await requireConnectEnabled(ctx)) return true;
+	return listPaymentProviders().some((provider) => provider.capabilities?.splits === true);
+}
+
 function connectOffResponse(): Response {
 	return json(
 		{
 			error: "marketplace_disabled",
 			message:
 				"Multi-vendor marketplace is disabled. Enable Stripe Connect in Settings to use vendor routes.",
+		},
+		409,
+	);
+}
+
+function vendorRoutesOffResponse(): Response {
+	return json(
+		{
+			error: "marketplace_disabled",
+			message:
+				"Multi-vendor marketplace is disabled. Enable Stripe Connect, or install a payment provider that supports split payments, to use vendor routes.",
 		},
 		409,
 	);
@@ -195,8 +217,11 @@ async function providerSettingsRows(ctx: PluginContext) {
 		rows.push({
 			...card,
 			credentialFields: provider.credentialFields ?? {},
+			capabilities: provider.capabilities ?? {},
 			checkoutStyles: providerCheckoutStyles(provider),
 			canCheckConnection: typeof provider.checkConnection === "function",
+			payoutOnboarding: typeof provider.createPayoutAccount === "function",
+			payoutVerification: typeof provider.resolvePayoutAccount === "function",
 			secrets: {
 				secretKey: await secretStatus(ctx, `${provider.id}SecretKey`),
 				webhookSecret: await secretStatus(ctx, `${provider.id}WebhookSecret`),
@@ -1297,7 +1322,10 @@ async function listVendors(ctx: PluginContext, req: Request): Promise<Response> 
 			(v) =>
 				v.name.toLowerCase().includes(q) ||
 				v.email.toLowerCase().includes(q) ||
-				v.stripeAccountId.toLowerCase().includes(q),
+				(v.stripeAccountId ?? "").toLowerCase().includes(q) ||
+				Object.values(v.paymentAccounts ?? {}).some((account) =>
+					account.accountReference.toLowerCase().includes(q),
+				),
 		);
 	}
 	return json({ items, cursor: result.cursor, hasMore: result.hasMore });
@@ -1314,6 +1342,8 @@ async function patchVendor(
 	const input = (routeCtx.input ?? {}) as {
 		name?: string;
 		platformFeePercent?: number;
+		paymentAccount?: PaymentAccountInput;
+		paymentAccounts?: PaymentAccountInput[];
 	};
 	const patch: Partial<Vendor> = {};
 	if (typeof input.name === "string") {
@@ -1328,6 +1358,23 @@ async function patchVendor(
 		}
 		patch.platformFeePercent = fee;
 	}
+	const accountInputs =
+		input.paymentAccounts ?? (input.paymentAccount ? [input.paymentAccount] : []);
+	if (accountInputs.length > 0) {
+		const accounts = { ...(current.paymentAccounts ?? {}) };
+		for (const raw of accountInputs) {
+			const parsed = parsePaymentAccount(raw);
+			if (!parsed.ok) return json({ error: parsed.error }, 400);
+			if (parsed.account) accounts[parsed.providerId] = parsed.account;
+			else delete accounts[parsed.providerId];
+		}
+		patch.paymentAccounts = Object.keys(accounts).length > 0 ? accounts : undefined;
+		if (!current.stripeAccountId) {
+			patch.onboardingStatus = Object.values(accounts).some((a) => a.status === "active")
+				? "active"
+				: "pending";
+		}
+	}
 	if (Object.keys(patch).length === 0) {
 		return json({ error: "No updatable fields provided" }, 400);
 	}
@@ -1340,6 +1387,359 @@ async function patchVendor(
 	return json({ vendor: { ...next, id: vendorId } });
 }
 
+interface PaymentAccountInput {
+	providerId?: string;
+	accountReference?: string | null;
+	status?: string;
+	currency?: string;
+	label?: string;
+}
+
+type ParsedPaymentAccount =
+	| { ok: true; providerId: string; account: VendorPaymentAccount | null }
+	| { ok: false; error: string };
+
+/**
+ * Validate a vendor payment account from the admin API. `accountReference:
+ * null` (or an empty string) removes the provider's account; anything else
+ * must name a registered provider that declares `capabilities.splits`.
+ */
+function parsePaymentAccount(input: PaymentAccountInput): ParsedPaymentAccount {
+	const providerId = typeof input.providerId === "string" ? input.providerId.trim() : "";
+	if (!providerId) return { ok: false, error: "paymentAccount.providerId is required" };
+	const provider = getPaymentProvider(providerId);
+	if (!provider) return { ok: false, error: `Unknown payment provider "${providerId}"` };
+	if (!provider.capabilities?.splits) {
+		return { ok: false, error: `Payment provider "${providerId}" does not support split payments` };
+	}
+
+	const rawReference = input.accountReference;
+	if (rawReference === null || (typeof rawReference === "string" && rawReference.trim() === "")) {
+		return { ok: true, providerId, account: null };
+	}
+	if (typeof rawReference !== "string") {
+		return { ok: false, error: "paymentAccount.accountReference must be a string or null" };
+	}
+	const accountReference = rawReference.trim();
+	if (!/^\S{4,128}$/u.test(accountReference)) {
+		return {
+			ok: false,
+			error: "paymentAccount.accountReference must be 4–128 characters with no spaces",
+		};
+	}
+
+	const status = input.status ?? "active";
+	if (status !== "active" && status !== "pending" && status !== "disabled") {
+		return { ok: false, error: "paymentAccount.status must be active, pending or disabled" };
+	}
+
+	const currencyRaw = input.currency?.trim().toUpperCase();
+	if (currencyRaw && !/^[A-Z]{3}$/u.test(currencyRaw)) {
+		return { ok: false, error: "paymentAccount.currency must be an ISO 4217 code" };
+	}
+
+	const label = input.label?.trim();
+	if (label && label.length > 80) {
+		return { ok: false, error: "paymentAccount.label must be at most 80 characters" };
+	}
+
+	return {
+		ok: true,
+		providerId,
+		account: {
+			accountReference,
+			status,
+			...(currencyRaw ? { currency: currencyRaw } : {}),
+			...(label ? { label } : {}),
+			updatedAt: new Date().toISOString(),
+		},
+	};
+}
+
+async function createVendor(ctx: PluginContext, routeCtx: RouteContext): Promise<Response> {
+	const input = (routeCtx.input ?? {}) as {
+		name?: string;
+		email?: string;
+		platformFeePercent?: number;
+		paymentAccount?: PaymentAccountInput;
+	};
+	const name = typeof input.name === "string" ? input.name.trim() : "";
+	if (!name) return json({ error: "name is required" }, 400);
+	const email = typeof input.email === "string" ? input.email.trim() : "";
+	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+		return json({ error: "A valid email is required" }, 400);
+	}
+	const fee = input.platformFeePercent ?? 0;
+	if (typeof fee !== "number" || !Number.isFinite(fee) || fee < 0 || fee > 100) {
+		return json({ error: "platformFeePercent must be between 0 and 100" }, 400);
+	}
+
+	const accounts: Record<string, VendorPaymentAccount> = {};
+	if (input.paymentAccount) {
+		const parsed = parsePaymentAccount(input.paymentAccount);
+		if (!parsed.ok) return json({ error: parsed.error }, 400);
+		if (parsed.account) accounts[parsed.providerId] = parsed.account;
+	}
+
+	const id = randomId();
+	const now = new Date().toISOString();
+	const vendor: Vendor = {
+		id,
+		name,
+		email,
+		onboardingStatus: Object.values(accounts).some((a) => a.status === "active")
+			? "active"
+			: "pending",
+		platformFeePercent: fee,
+		detailsSubmitted: false,
+		chargesEnabled: false,
+		payoutsEnabled: false,
+		...(Object.keys(accounts).length > 0 ? { paymentAccounts: accounts } : {}),
+		createdAt: now,
+		updatedAt: now,
+	};
+	await storeOf<Vendor>(ctx, "vendors").put(id, vendor);
+	return json({ vendor }, 201);
+}
+
+function maskAccountNumber(value: string): string {
+	const trimmed = value.trim();
+	if (trimmed.length <= 4) return "••••";
+	return `••••${trimmed.slice(-4)}`;
+}
+
+async function listProviderPayoutBanks(ctx: PluginContext, req: Request): Promise<Response> {
+	const url = new URL(req.url);
+	const providerId = (url.searchParams.get("provider") ?? "").trim();
+	const country = (url.searchParams.get("country") ?? "").trim().toUpperCase();
+	if (!providerId) return json({ error: "provider is required" }, 400);
+	if (!/^[A-Z]{2}$/u.test(country)) {
+		return json({ error: "country must be an ISO-2 code" }, 400);
+	}
+	const provider = getPaymentProvider(providerId);
+	if (!provider?.listPayoutBanks) {
+		return json(
+			{ error: `Payment provider "${providerId}" does not support payout banks` },
+			400,
+		);
+	}
+	const credentials = await loadPaymentProviderCredentials(ctx.kv, providerId);
+	if (!credentials) {
+		return json({ error: `Payment provider "${providerId}" is not configured` }, 400);
+	}
+	try {
+		const banks = await provider.listPayoutBanks(ctx, country, credentials);
+		return json({ banks });
+	} catch (err) {
+		return json(
+			{ error: err instanceof Error ? err.message : "Could not load banks" },
+			502,
+		);
+	}
+}
+
+async function resolveProviderPayoutAccount(
+	ctx: PluginContext,
+	routeCtx: RouteContext,
+): Promise<Response> {
+	const input = (routeCtx.input ?? {}) as {
+		providerId?: string;
+		accountNumber?: string;
+		bankCode?: string;
+	};
+	const providerId = typeof input.providerId === "string" ? input.providerId.trim() : "";
+	const accountNumber =
+		typeof input.accountNumber === "string" ? input.accountNumber.trim() : "";
+	const bankCode = typeof input.bankCode === "string" ? input.bankCode.trim() : "";
+	if (!providerId) return json({ error: "providerId is required" }, 400);
+	if (!/^\S{4,34}$/u.test(accountNumber)) {
+		return json({ error: "accountNumber must be 4–34 characters with no spaces" }, 400);
+	}
+	if (!/^\S{1,16}$/u.test(bankCode)) {
+		return json({ error: "bankCode is required" }, 400);
+	}
+	const provider = getPaymentProvider(providerId);
+	if (!provider?.resolvePayoutAccount) {
+		return json(
+			{ error: `Payment provider "${providerId}" does not support account resolution` },
+			400,
+		);
+	}
+	const credentials = await loadPaymentProviderCredentials(ctx.kv, providerId);
+	if (!credentials) {
+		return json({ error: `Payment provider "${providerId}" is not configured` }, 400);
+	}
+	try {
+		const result = await provider.resolvePayoutAccount(
+			ctx,
+			{ accountNumber, bankCode },
+			credentials,
+		);
+		if (!result.accountName?.trim()) {
+			return json({ error: "Provider returned no account name" }, 502);
+		}
+		return json({ accountName: result.accountName.trim() });
+	} catch (err) {
+		return json(
+			{ error: err instanceof Error ? err.message : "Could not resolve the account" },
+			502,
+		);
+	}
+}
+
+async function createProviderPayoutAccount(
+	ctx: PluginContext,
+	routeCtx: RouteContext,
+): Promise<Response> {
+	const input = (routeCtx.input ?? {}) as {
+		providerId?: string;
+		vendorId?: string;
+		accountNumber?: string;
+		bankCode?: string;
+		country?: string;
+		businessName?: string;
+		businessEmail?: string;
+		businessMobile?: string;
+		businessContact?: string;
+		businessContactMobile?: string;
+		splitType?: string;
+		splitValue?: number;
+		metadata?: Record<string, string>;
+		replace?: boolean;
+	};
+	const providerId = typeof input.providerId === "string" ? input.providerId.trim() : "";
+	const vendorId = typeof input.vendorId === "string" ? input.vendorId.trim() : "";
+	const accountNumber =
+		typeof input.accountNumber === "string" ? input.accountNumber.trim() : "";
+	const bankCode = typeof input.bankCode === "string" ? input.bankCode.trim() : "";
+	const country = (typeof input.country === "string" ? input.country : "").trim().toUpperCase();
+	const businessName =
+		typeof input.businessName === "string" ? input.businessName.trim() : "";
+	const businessEmail =
+		typeof input.businessEmail === "string" ? input.businessEmail.trim() : "";
+	const businessMobile =
+		typeof input.businessMobile === "string" ? input.businessMobile.trim() : "";
+
+	if (!providerId || !vendorId) {
+		return json({ error: "providerId and vendorId are required" }, 400);
+	}
+	if (!/^\S{4,34}$/u.test(accountNumber)) {
+		return json({ error: "accountNumber must be 4–34 characters with no spaces" }, 400);
+	}
+	if (!/^\S{1,16}$/u.test(bankCode)) return json({ error: "bankCode is required" }, 400);
+	if (!/^[A-Z]{2}$/u.test(country)) {
+		return json({ error: "country must be an ISO-2 code" }, 400);
+	}
+	if (!businessName) return json({ error: "businessName is required" }, 400);
+	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(businessEmail)) {
+		return json({ error: "A valid businessEmail is required" }, 400);
+	}
+	if (!businessMobile) return json({ error: "businessMobile is required" }, 400);
+
+	const splitType = input.splitType ?? "percentage";
+	if (splitType !== "percentage" && splitType !== "flat") {
+		return json({ error: "splitType must be percentage or flat" }, 400);
+	}
+	const splitValue = input.splitValue ?? (splitType === "percentage" ? 0.1 : 0);
+	if (typeof splitValue !== "number" || !Number.isFinite(splitValue) || splitValue < 0) {
+		return json({ error: "splitValue must be a non-negative number" }, 400);
+	}
+	if (splitType === "percentage" && splitValue > 1) {
+		return json({ error: "percentage splitValue is a decimal from 0 to 1" }, 400);
+	}
+	if (splitType === "flat" && splitValue <= 0) {
+		return json({ error: "flat splitValue must be positive" }, 400);
+	}
+
+	const provider = getPaymentProvider(providerId);
+	if (!provider?.createPayoutAccount) {
+		return json(
+			{ error: `Payment provider "${providerId}" does not support payout onboarding` },
+			400,
+		);
+	}
+	const canVerify = typeof provider.resolvePayoutAccount === "function";
+	const credentials = await loadPaymentProviderCredentials(ctx.kv, providerId);
+	if (!credentials) {
+		return json({ error: `Payment provider "${providerId}" is not configured` }, 400);
+	}
+
+	const store = storeOf<Vendor>(ctx, "vendors");
+	const vendor = (await store.get(vendorId)) as Vendor | null;
+	if (!vendor) return json({ error: "Vendor not found" }, 404);
+	if (vendor.paymentAccounts?.[providerId] && input.replace !== true) {
+		return json(
+			{
+				error: `Vendor already has a ${providerId} payout account. Remove it or pass replace: true.`,
+			},
+			409,
+		);
+	}
+
+	try {
+		const created = await provider.createPayoutAccount(
+			ctx,
+			{
+				accountNumber,
+				bankCode,
+				country,
+				businessName,
+				businessEmail,
+				businessMobile,
+				...(typeof input.businessContact === "string" && input.businessContact.trim()
+					? { businessContact: input.businessContact.trim() }
+					: {}),
+				...(typeof input.businessContactMobile === "string" &&
+				input.businessContactMobile.trim()
+					? { businessContactMobile: input.businessContactMobile.trim() }
+					: {}),
+				splitType,
+				splitValue,
+				...(input.metadata ? { metadata: input.metadata } : {}),
+			},
+			credentials,
+		);
+		if (!created.accountReference?.trim()) {
+			return json({ error: "Provider returned no account reference" }, 502);
+		}
+		if (canVerify && !created.accountName?.trim()) {
+			return json({ error: "Provider returned no account name" }, 502);
+		}
+		const now = new Date().toISOString();
+		const account: VendorPaymentAccount = {
+			accountReference: created.accountReference.trim(),
+			status: "active",
+			...(created.accountName ? { accountName: created.accountName.trim() } : {}),
+			verified: created.verified ?? canVerify,
+			...(created.bankName ? { bankName: created.bankName } : {}),
+			bankCode: created.bankCode ?? bankCode,
+			country: created.country ?? country,
+			maskedAccountNumber: created.maskedAccountNumber ?? maskAccountNumber(accountNumber),
+			...(created.metadata ? { metadata: created.metadata } : {}),
+			...(created.bankName ? { label: created.bankName } : {}),
+			createdAt: now,
+			updatedAt: now,
+		};
+		const accounts = { ...(vendor.paymentAccounts ?? {}), [providerId]: account };
+		const next: Vendor = {
+			...vendor,
+			paymentAccounts: accounts,
+			...(vendor.stripeAccountId ? {} : { onboardingStatus: "active" }),
+			updatedAt: now,
+		};
+		await store.put(vendorId, next);
+		return json({ vendor: { ...next, id: vendorId } }, 201);
+	} catch (err) {
+		return json(
+			{
+				error:
+					err instanceof Error ? err.message : "Could not create the payout account",
+			},
+			502,
+		);
+	}
+}
+
 async function refreshVendorFromStripe(
 	ctx: PluginContext,
 	vendorId: string,
@@ -1349,6 +1749,9 @@ async function refreshVendorFromStripe(
 	const store = storeOf<Vendor>(ctx, "vendors");
 	const current = (await store.get(vendorId)) as Vendor | null;
 	if (!current) return json({ error: "Vendor not found" }, 404);
+	if (!current.stripeAccountId) {
+		return json({ error: "Vendor has no Stripe account" }, 400);
+	}
 	try {
 		const account = await stripeCall<{
 			id: string;
@@ -1888,7 +2291,7 @@ export const adminApiRoutes = {
 	"admin/vendors": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
-			if (!(await requireConnectEnabled(ctx))) return connectOffResponse();
+			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
 			return listVendors(ctx, routeCtx.request);
 		},
 	},
@@ -1902,13 +2305,43 @@ export const adminApiRoutes = {
 	"admin/vendors/item": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
-			if (!(await requireConnectEnabled(ctx))) return connectOffResponse();
+			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
+			if (routeCtx.request.method === "POST") {
+				return createVendor(ctx, routeCtx);
+			}
 			const id = queryOrPath(routeCtx.request, "id", "vendors");
 			if (!id) return json({ error: "Missing vendor id" }, 400);
 			if (routeCtx.request.method === "PATCH") {
 				return patchVendor(ctx, id, routeCtx);
 			}
 			return json({ error: "Method not allowed" }, 405);
+		},
+	},
+	"admin/vendors/payout-banks": {
+		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
+			return listProviderPayoutBanks(ctx, routeCtx.request);
+		},
+	},
+	"admin/vendors/payout-account/resolve": {
+		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
+			if (routeCtx.request.method !== "POST") {
+				return json({ error: "Method not allowed" }, 405);
+			}
+			return resolveProviderPayoutAccount(ctx, routeCtx);
+		},
+	},
+	"admin/vendors/payout-account": {
+		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
+			if (routeCtx.request.method !== "POST") {
+				return json({ error: "Method not allowed" }, 405);
+			}
+			return createProviderPayoutAccount(ctx, routeCtx);
 		},
 	},
 	"admin/vendors/refresh": {
