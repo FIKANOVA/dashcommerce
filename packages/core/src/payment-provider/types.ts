@@ -290,6 +290,29 @@ export type NormalizedPaymentEvent =
 			raw: unknown;
 	  }
 	| {
+			/**
+			 * A customer disputed a payment (chargeback), or the dispute moved
+			 * on. Core finds the order by `paymentReference`, records the
+			 * dispute, emails the store's admins about a new open one, and
+			 * counts a lost one like a refund. Evidence is answered in the
+			 * provider's dashboard, never through core.
+			 */
+			type: "dispute.updated";
+			providerId: string;
+			providerEventId: string;
+			providerDisputeId: string;
+			paymentReference: string;
+			/** `won` means the store keeps the money; `lost` means it goes back. */
+			status: "open" | "won" | "lost";
+			/** Disputed amount in integer minor units. */
+			amount: number;
+			currency: string;
+			reason?: string;
+			/** ISO date-time by which the merchant must answer, when known. */
+			dueAt?: string;
+			raw: unknown;
+	  }
+	| {
 			type: "unhandled";
 			providerEventType: string;
 			providerEventId?: string;

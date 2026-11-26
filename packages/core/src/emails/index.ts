@@ -10,6 +10,7 @@
  * Event map:
  *   - order receipt              → routes/webhook.ts (PI + Checkout)
  *   - refund receipt             → routes/webhook.ts (charge.refunded)
+ *   - dispute alert (admins)     → orders/dispute.ts (dispute.updated)
  *   - abandoned cart             → abandoned-cart/recover.ts cron
  *   - dunning / payment-failed   → subscriptions/dunning.ts
  *   - subscription renewed       → routes/webhook.ts (invoice.payment_succeeded, cycle)
@@ -22,6 +23,7 @@
 export {
 	composeAbandonedCart,
 } from "./abandoned-cart";
+export { composeDisputeAlert, sendDisputeAlert } from "./dispute";
 export { composeDunning } from "./dunning";
 export type { ComposedEmail } from "./receipt";
 export { composeOrderReceipt, sendOrderReceipt } from "./receipt";

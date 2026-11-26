@@ -80,6 +80,8 @@ For provider authors, `PaymentProvider` can declare:
 
 `parseWebhookEvent` may return `refund.updated` to move a pending refund to `succeeded` or `failed`. A failed refund stops counting against its order: the refunded total, payment status and order status are worked out again, and stock the refund put back is taken back off.
 
+`parseWebhookEvent` may return `dispute.updated` when a customer disputes a payment (`providerDisputeId`, `paymentReference`, `status` of `open`, `won` or `lost`, `amount` in minor units, `currency`, and `reason` and `dueAt` when known). Core records the dispute on the order paid through that provider, emails the store's admin users once when a new dispute opens (amount, deadline, "answer it in your <provider> dashboard"), and counts a lost dispute like a refund, without emailing the customer. Give each dispute status change its own `providerEventId` so a repeat delivery is skipped but the next status is not. The Stripe adapter maps `charge.dispute.created`, `charge.dispute.updated` and `charge.dispute.closed`.
+
 Event-level dedup skips a repeated delivery even if the first one failed, so a duplicate side effect never runs. The exception is a failure to confirm the payment with the provider (`getPaymentStatus` throwing or not reporting paid). That failure happens before any side effect, so the provider's retry is processed.
 
 If the provider refuses the cart's currency (an account not enabled for it, say), throw `CurrencyNotSupportedError` from `initCheckout`. Core answers `create-session` with a 400 that tells the customer to choose another currency, instead of a 500.
