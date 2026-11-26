@@ -91,6 +91,10 @@ export async function retrievePaymentIntent(
  * Cancel a PaymentIntent. Stripe allows it while the intent waits for a
  * payment method, confirmation or action, and while some methods are
  * processing; it refuses once the intent succeeded.
+ *
+ * No idempotency key: Stripe would replay a first, transient failure for
+ * 24 hours and keep blocking the shopper's retry. Cancelling twice is
+ * harmless, and the caller re-reads the intent when a cancel fails.
  */
 export async function cancelPaymentIntent(
 	ctx: PluginContext,
@@ -101,7 +105,6 @@ export async function cancelPaymentIntent(
 		method: "POST",
 		path: `/payment_intents/${encodeURIComponent(id)}/cancel`,
 		params: { cancellation_reason: "abandoned" },
-		idempotencyKey: `cancel:${id}`,
 		client,
 	});
 }
