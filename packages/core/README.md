@@ -149,6 +149,8 @@ POST   /reviews/item                      Submit a review (moderation queue)
 GET    /config-check                      Read-only health check (Stripe keys present, etc.)
 ```
 
+Regions are ISO 3166-2 subdivision parts (`30` for Nairobi City). `cart/shipping-location`, `cart/shipping-address` and `cart/contact` take `KE-30` as `30` and a county or state name the shop knows ("Nairobi") as its code. In a country where a shipping zone names regions, a region the zones don't name is kept only if it is a real region (Mombasa stays `28`, priced as elsewhere); anything else is stored as no region, which gets the country-wide rate.
+
 ### Admin-gated routes
 
 Same prefix, gated by emdash's admin auth:

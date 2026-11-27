@@ -153,6 +153,64 @@ describe("rates by region through the cart routes", () => {
 	});
 });
 
+describe("regions checked against the zones", () => {
+	const address = (region: string) => ({
+		firstName: "Wanjiru",
+		lastName: "Kamau",
+		line1: "Ngong Road",
+		city: "Nairobi",
+		region,
+		postalCode: "",
+		country: "KE",
+	});
+
+	it("takes KE-30 as 30 on every route that sets the ship-to region", async () => {
+		const located = await ratesFor({ country: "KE", region: "KE-30" });
+		expect(located.cart.shippingAddress?.region).toBe("30");
+		expect(located.options.map((o) => o.methodId)).toEqual(["ship_nbo"]);
+
+		const { ctx, call } = shop();
+		const viaContact = await newCart(ctx);
+		const contact = await call("cart/contact", viaContact, {
+			email: "shopper@example.com",
+			shippingAddress: address("ke-30"),
+		});
+		expect((contact.body.cart as CartState).shippingAddress?.region).toBe("30");
+
+		const viaAddress = await newCart(ctx);
+		const set = await call("cart/shipping-address", viaAddress, { address: address("KE-30") });
+		expect((set.body.cart as CartState).shippingAddress?.region).toBe("30");
+		const rates = await call("cart/shipping-methods", viaAddress, {}, "GET");
+		expect((rates.body.options as Array<{ methodId: string }>).map((o) => o.methodId)).toEqual([
+			"ship_nbo",
+		]);
+	});
+
+	it("turns a county name typed on the address into its code", async () => {
+		const { ctx, call } = shop();
+		const sessionId = await newCart(ctx);
+		const res = await call("cart/shipping-address", sessionId, { address: address("Nairobi") });
+		expect((res.body.cart as CartState).shippingAddress?.region).toBe("30");
+	});
+
+	it("keeps a real county the zones don't name, priced as elsewhere", async () => {
+		const { cart, options } = await ratesFor({ country: "KE", region: "KE-28" });
+		expect(cart.shippingAddress?.region).toBe("28");
+		expect(options.map((o) => o.methodId)).toEqual(["ship_ke"]);
+	});
+
+	it("stores a region nobody knows as no region instead of refusing it", async () => {
+		const { cart, options } = await ratesFor({ country: "KE", region: "Atlantis" });
+		expect(cart.shippingAddress?.region).toBe("");
+		expect(options.map((o) => o.methodId)).toEqual(["ship_ke"]);
+	});
+
+	it("leaves the region alone in a country whose zones name none", async () => {
+		const { cart } = await ratesFor({ country: "UG", region: "Kampala" });
+		expect(cart.shippingAddress?.region).toBe("Kampala");
+	});
+});
+
 describe("cart/shipping-regions", () => {
 	it("lists the regions the zones name, with their names", async () => {
 		const { ctx, call } = shop([
