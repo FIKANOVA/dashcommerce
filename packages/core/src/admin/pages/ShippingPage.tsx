@@ -418,11 +418,16 @@ function ZoneCard({
 		zone.locations.length === 0
 			? "Everywhere (fallback)"
 			: zone.locations
-					.map((l) =>
-						l.regions && l.regions.length > 0
-							? `${l.country} (${l.regions.map((r) => regionName(l.country, r)).join(", ")})`
-							: l.country,
-					)
+					.map((l) => {
+						const parts: string[] = [];
+						if (l.regions && l.regions.length > 0) {
+							parts.push(l.regions.map((r) => regionName(l.country, r)).join(", "));
+						}
+						if (l.postcodes && l.postcodes.length > 0) {
+							parts.push(`postcodes ${l.postcodes.join(", ")}`);
+						}
+						return parts.length > 0 ? `${l.country} (${parts.join("; ")})` : l.country;
+					})
 					.join(", ");
 
 	return (
@@ -604,6 +609,18 @@ function ZoneEditor({
 					.split(",")
 					.map((r) => r.trim())
 					.filter(Boolean);
+	// Postcode prefixes and ranges by country, as typed. The server checks
+	// and normalises them.
+	const [postcodeText, setPostcodeText] = useState<Record<string, string>>(() =>
+		Object.fromEntries(
+			initial?.locations.map((l) => [l.country, (l.postcodes ?? []).join(", ")]) ?? [],
+		),
+	);
+	const postcodesFor = (country: string): string[] =>
+		(postcodeText[country] ?? "")
+			.split(/[,\n]/)
+			.map((p) => p.trim())
+			.filter(Boolean);
 	const [order, setOrder] = useState<number | null>(initial?.order ?? 0);
 	const [saving, setSaving] = useState(false);
 
@@ -623,9 +640,11 @@ function ZoneEditor({
 						name: name.trim(),
 						locations: countries.map((c) => {
 							const codes = regionsFor(c);
+							const postcodes = postcodesFor(c);
 							return {
 								country: c as ShippingZone["locations"][number]["country"],
 								...(codes.length > 0 ? { regions: codes } : {}),
+								...(postcodes.length > 0 ? { postcodes } : {}),
 							};
 						}),
 						order: order ?? 0,
@@ -693,6 +712,30 @@ function ZoneEditor({
 					</FormField>
 				);
 			})}
+			{countries.map((country) => (
+				<FormField
+					key={country}
+					label={`Postcodes in ${getCountryName(country)}`}
+					description={
+						"Optional. Prefixes (00100, SW1) or ranges (1000-1999), separated by commas or new lines. " +
+						`When a zone lists some, checkout asks customers in ${getCountryName(country)} for their postcode.`
+					}
+					htmlFor={`zone-postcodes-${country}`}
+				>
+					<textarea
+						id={`zone-postcodes-${country}`}
+						value={postcodeText[country] ?? ""}
+						onChange={(e) => {
+							const text = e.currentTarget.value;
+							setPostcodeText((prev) => ({ ...prev, [country]: text }));
+						}}
+						rows={2}
+						placeholder="e.g. 1000-1999, 2600"
+						disabled={saving}
+						style={textareaStyle}
+					/>
+				</FormField>
+			))}
 			<FormField
 				label="Order"
 				description="Lower numbers are evaluated first. Use this when zones overlap."
