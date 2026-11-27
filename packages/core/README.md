@@ -78,6 +78,8 @@ For provider authors, `PaymentProvider` can declare:
 - `capabilities.subscriptions` plus optional `getSubscription`, `cancelSubscription` and `resumeSubscription`: core stores the provider's subscription/plan id from the first `charge.succeeded` that carries `subscription`, records later charges as invoices, and dispatches cancel/resume. Return `ProviderSubscriptionInfo`. A provider that cannot pause or change plans in place can omit those methods; core refuses the action with a readable error.
 - `parseWebhookEvent` may return `subscription.updated` for a cancellation or status change outside a charge. Core updates the local row and does not create an order.
 
+- `inPersonMethods`, `listTerminals` and `startInPersonPayment`: counter sales (see "Counter sales" below). Declare `["phone"]`, `["terminal"]` or both. `startInPersonPayment` gets `{ orderDraftId, amount, currency, customer: { email, phone? }, method }` and returns `{ paymentReference, status }`; core then polls `getPaymentStatus(paymentReference)`, which a counter provider must implement. A `charge.succeeded` webhook for the payment must carry the same `paymentReference` and `orderDraftId`.
+
 `parseWebhookEvent` may return `refund.updated` to move a pending refund to `succeeded` or `failed`. A failed refund stops counting against its order: the refunded total, payment status and order status are worked out again, and stock the refund put back is taken back off.
 
 `parseWebhookEvent` may return `dispute.updated` when a customer disputes a payment (`providerDisputeId`, `paymentReference`, `status` of `open`, `won` or `lost`, `amount` in minor units, `currency`, and `reason` and `dueAt` when known). Core records the dispute on the order paid through that provider, emails the store's admin users once when a new dispute opens (amount, deadline, "answer it in your <provider> dashboard"), and counts a lost dispute like a refund, without emailing the customer. Give each dispute status change its own `providerEventId` so a repeat delivery is skipped but the next status is not. The Stripe adapter maps `charge.dispute.created`, `charge.dispute.updated` and `charge.dispute.closed`.
@@ -207,7 +209,8 @@ email-throttle:{category}:* per-customer email de-duplication keys
 
 React pages served at `/_emdash/admin/plugins/dashcommerce/*`:
 
-- Orders (list, detail, refund, status transitions)
+- Orders (list, detail, refund, status transitions, online or counter filter)
+- Counter sale (sell in person: phone prompt or card terminal)
 - Customers (list, detail, order history)
 - Coupons (CRUD + usage reports)
 - Shipping (zones + methods + classes)
@@ -229,6 +232,23 @@ Refunds and payment settings are for EmDash Admins only. EmDash already sends ev
 - Vendor payout changes: `POST`/`PATCH /admin/vendors/item`, `/admin/vendors/onboard-link`, `/admin/vendors/payout-account` and its `/resolve` — 403 "Only an admin can manage vendor payouts." Listing vendors stays open.
 
 A call with no signed-in user is refused. The order detail and settings responses carry `canRefund` and `_canManagePayments`, so the admin shows non-admins a short note instead of the refund form and greys out the payment cards.
+
+### Counter sales
+
+The **Counter sale** page sells in person from the same products and stock as the shop. Staff add products, then choose how the customer pays: a prompt on the customer's phone (M-PESA through Paystack), or a card terminal when the provider lists one. Stock is held while the customer pays (15 minutes at most). The page checks `admin/counter/status` every 3 seconds and shows "Paid. Order 1042", or "Cancelled or declined" / "Timed out" (after 5 minutes) with a Retry button; a failed or timed-out sale releases the stock. If the customer still pays after a time-out, the order is still created: by the webhook, or by the status check, which asks the provider again about a timed-out sale and about any terminal sale (a card can be tapped after the page stops waiting). The page keeps checking a failed terminal sale, warns before "New sale" drops one that may still be paid, and Retry sends `retryOf`: the route refuses with 409 if the earlier attempt was paid or is still waiting, and links the two so a second payment is held for review.
+
+The webhook and the status check can confirm the same payment at once. Order creation first claims the payment (a row with a unique key in the webhook dedup log), so the second caller stops before any side effect and is answered as a duplicate; a failed creation releases the claim.
+
+The order is created through the same path as an online order (stock, coupons, receipt email), from the signed webhook or the status check, whichever confirms first. It carries `channel: "in_person"` and `soldBy` (the seller's EmDash user id); `GET /admin/orders?channel=in_person` (or `online`) filters by it. A sale with no customer email uses the seller's own email for the provider and the receipt. Subscription and vendor-owned products are sold online only for now, and the product list covers simple prices (not variant pickers) and scans up to 200 products.
+
+```
+GET    /admin/counter/setup               Provider, methods, terminals, currency
+GET    /admin/counter/products?q=         Products priced in the shop currency
+POST   /admin/counter/sale                { lines, method, customerEmail?, currency? }
+GET    /admin/counter/status?draft={id}   pending | paid (orderNumber) | failed (declined | timed_out)
+```
+
+The counter routes allow Editors and Admins (`ctx.user.role` 40 or more) and refuse anyone else, or a call with no user, with 403. Refunds of counter sales stay admin-only. EmDash 0.x and 1.x send every non-public plugin route through `plugins:manage`, so until EmDash lets a plugin route ask for a lesser permission, only Admins reach these routes in practice.
 
 The admin follows the EmDash admin's light or dark mode: its colours come from EmDash's theme tokens, with light fallbacks for hosts without them. It uses CSS `color-mix()`, so it needs a browser from 2023 or later (Chrome 111, Safari 16.2, Firefox 113).
 

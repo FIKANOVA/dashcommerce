@@ -488,6 +488,45 @@ export interface CreatedPayoutAccount {
 	metadata?: Record<string, string>;
 }
 
+/** How staff take payment at a counter: a phone prompt or a card terminal. */
+export type InPersonMethodType = "phone" | "terminal";
+
+/** A provider's card terminal the merchant can push a payment to. */
+export interface PaymentProviderTerminal {
+	id: string;
+	name: string;
+}
+
+/**
+ * An in-person (counter) payment. Core has already priced the sale, held the
+ * stock and stored the order draft; the provider only asks for the money.
+ */
+export interface StartInPersonPaymentInput {
+	orderDraftId: string;
+	/** Integer minor units. */
+	amount: number;
+	currency: string;
+	/**
+	 * `email` is always set: the customer's, or the signed-in staff member's
+	 * when the customer gave none (some providers refuse a charge without one).
+	 */
+	customer: { email: string; phone?: string };
+	method: { type: "phone"; phone: string } | { type: "terminal"; terminalId: string };
+}
+
+export interface StartInPersonPaymentResult {
+	/**
+	 * What core passes to `getPaymentStatus` while it waits, and stores on
+	 * the order. A `charge.succeeded` webhook for the payment must carry the
+	 * same `paymentReference`.
+	 */
+	paymentReference: string;
+	/** Usually `pending`: the customer still has to approve. */
+	status: "pending" | "succeeded" | "failed";
+	/** The provider's reason, when it refused at once. */
+	reason?: string;
+}
+
 export interface PaymentProvider {
 	readonly id: string;
 	readonly label: string;
@@ -605,6 +644,27 @@ export interface PaymentProvider {
 		ctx: PaymentProviderRuntimeContext,
 		credentials: PaymentProviderCredentials,
 	): Promise<ConnectionCheckResult>;
+
+	/**
+	 * In-person (counter) payments. Declare the methods the provider can take
+	 * and implement `startInPersonPayment`; core polls `getPaymentStatus`
+	 * (required for counter sales) until the payment is settled. The order is
+	 * created through the same path as an online one, from the webhook or
+	 * from that status check, whichever comes first.
+	 */
+	readonly inPersonMethods?: readonly InPersonMethodType[];
+
+	/** The merchant's card terminals, for the `terminal` method. */
+	listTerminals?(
+		ctx: PaymentProviderRuntimeContext,
+		credentials: PaymentProviderCredentials,
+	): Promise<PaymentProviderTerminal[]>;
+
+	startInPersonPayment?(
+		ctx: PaymentProviderRuntimeContext,
+		input: StartInPersonPaymentInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<StartInPersonPaymentResult>;
 
 	/**
 	 * Provider-managed payout onboarding. When a provider implements these,

@@ -45,6 +45,7 @@ import { adminApiRoutes } from "./routes/admin-api";
 import { cartRoutes } from "./routes/cart";
 import { checkoutRoutes } from "./routes/checkout";
 import { configCheckRoutes } from "./routes/config-check";
+import { counterRoutes } from "./routes/counter";
 import { customerPortalRoutes } from "./routes/customer-portal";
 import { downloadsRoutes } from "./routes/downloads";
 import { ordersPublicRoutes } from "./routes/orders-public";
@@ -95,6 +96,7 @@ export const ROUTES = {
 	...subscriptionsPublicRoutes,
 	...webhookRoutes,
 	...adminApiRoutes,
+	...counterRoutes,
 } as unknown as Record<string, CommerceRouteEntry>;
 
 /**
@@ -155,6 +157,7 @@ export interface CreatePluginOptions {
  */
 const ADMIN_PAGES: PluginAdminPage[] = [
 	{ path: "/orders", label: "Orders", icon: "shopping-bag" },
+	{ path: "/counter", label: "Counter sale", icon: "credit-card" },
 	{ path: "/customers", label: "Customers", icon: "users" },
 	{ path: "/coupons", label: "Coupons", icon: "tag" },
 	{ path: "/shipping", label: "Shipping", icon: "truck" },

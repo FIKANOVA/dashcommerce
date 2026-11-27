@@ -72,7 +72,7 @@ export function makeRouteContext(
 		},
 	);
 
-	const products = new Map([
+	const products = new Map<string, { id: string; status: string; data: Row }>([
 		[
 			"prod_ticket",
 			{
@@ -84,6 +84,21 @@ export function makeRouteContext(
 					prices: { KES: { amount: 150000 } },
 					virtual: true,
 					manage_stock: false,
+				},
+			},
+		],
+		[
+			// A counter product whose stock is tracked.
+			"prod_mug",
+			{
+				id: "prod_mug",
+				status: "published",
+				data: {
+					title: "Club mug",
+					type: "simple",
+					prices: { KES: { amount: 80000 } },
+					manage_stock: true,
+					stock_quantity: 5,
 				},
 			},
 		],
@@ -118,6 +133,14 @@ export function makeRouteContext(
 			async get(collection: string, id: string) {
 				return collection === "products" ? (products.get(id) ?? null) : null;
 			},
+			async list(collection: string) {
+				return { items: collection === "products" ? [...products.values()] : [], hasMore: false };
+			},
+			async update(collection: string, id: string, patch: Row) {
+				const product = collection === "products" ? products.get(id) : undefined;
+				if (product) product.data = { ...product.data, ...patch };
+				return product ?? null;
+			},
 		},
 		http: { fetch: fetchImpl },
 		site: { url: "https://shop.example", name: "Shop" },
@@ -125,7 +148,7 @@ export function makeRouteContext(
 		log: { debug: log("debug"), info: log("info"), warn: log("warn"), error: log("error") },
 	} as unknown as PluginContext;
 
-	return { ctx, getCol, kvStore, logs };
+	return { ctx, getCol, kvStore, logs, products };
 }
 
 export function ticketCart(sessionId: string): CartState {

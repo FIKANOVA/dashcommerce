@@ -12,6 +12,7 @@
 import type { ComponentType } from "react";
 
 import { KitPortals } from "./kit";
+import { CounterSalePage } from "./pages/CounterSalePage";
 import { CouponsPage } from "./pages/CouponsPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { MenusPage } from "./pages/MenusPage";
@@ -58,6 +59,7 @@ export const pages: Record<string, ComponentType> = {
 	// `CustomersPage` render the detail view inline when the hash matches
 	// `#/orders/<id>` / `#/customers/<id>` instead.
 	"/orders": withPortals(OrdersPage),
+	"/counter": withPortals(CounterSalePage),
 	"/customers": withPortals(CustomersPage),
 	"/coupons": withPortals(CouponsPage),
 	"/shipping": withPortals(ShippingPage),

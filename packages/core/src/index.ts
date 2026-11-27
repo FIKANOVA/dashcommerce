@@ -110,6 +110,7 @@ export function dashcommerce(options: DashCommerceOptions = {}): PluginDescripto
 		// (/orders/:id, etc.) stay in admin/entry.tsx for in-app navigation only.
 		adminPages: [
 			{ path: "/orders", label: "Orders", icon: "shopping-bag" },
+			{ path: "/counter", label: "Counter sale", icon: "credit-card" },
 			{ path: "/customers", label: "Customers", icon: "users" },
 			{ path: "/coupons", label: "Coupons", icon: "tag" },
 			{ path: "/shipping", label: "Shipping", icon: "truck" },

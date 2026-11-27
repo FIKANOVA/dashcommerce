@@ -174,7 +174,7 @@ function paidAttemptKey(group: string): string {
 	return `attempt-paid:${group}`;
 }
 
-async function linkAttempts(
+export async function linkAttempts(
 	ctx: PluginContext,
 	previousDraftId: string,
 	orderDraftId: string,

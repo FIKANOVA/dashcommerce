@@ -10,7 +10,10 @@ import type {
 	NormalizedPaymentEvent,
 	PaymentProvider,
 	PaymentProviderCapabilities,
+	PaymentProviderTerminal,
 	PaymentStatusResult,
+	StartInPersonPaymentInput,
+	StartInPersonPaymentResult,
 	RefundResult,
 	VerifyWebhookInput,
 	VerifyWebhookResult,
@@ -29,6 +32,17 @@ export interface MockPaymentProviderOptions {
 	getPaymentStatusResult?: PaymentStatusResult;
 	/** Declare on-page checkout and return `on_page` results when asked. */
 	onPageCheckout?: boolean;
+	/** Live status per reference; takes precedence over `getPaymentStatusResult`. */
+	paymentStatus?: (paymentReference: string) => PaymentStatusResult;
+	/** Take counter sales by these methods. */
+	inPerson?: {
+		methods: Array<"phone" | "terminal">;
+		terminals?: PaymentProviderTerminal[];
+		/** Called with each in-person payment core starts. */
+		onStart?: (input: StartInPersonPaymentInput) => void;
+		/** Defaults to `pending` with reference `mock_counter_<draft>`. */
+		result?: Partial<StartInPersonPaymentResult>;
+	};
 }
 
 function appendQueryParam(urlString: string, key: string, value: string): string {
@@ -192,6 +206,26 @@ export function createMockPaymentProvider(
 			return format(money(currency, amount));
 		},
 
+		...(options.inPerson
+			? {
+					inPersonMethods: options.inPerson.methods,
+					async listTerminals(): Promise<PaymentProviderTerminal[]> {
+						return options.inPerson?.terminals ?? [];
+					},
+					async startInPersonPayment(
+						_ctx: unknown,
+						input: StartInPersonPaymentInput,
+					): Promise<StartInPersonPaymentResult> {
+						options.inPerson?.onStart?.(input);
+						return {
+							paymentReference: `mock_counter_${input.orderDraftId}`,
+							status: "pending",
+							...options.inPerson?.result,
+						};
+					},
+				}
+			: {}),
+
 		...(options.omitGetPaymentStatus
 			? {}
 			: {
@@ -199,6 +233,9 @@ export function createMockPaymentProvider(
 						_ctx: unknown,
 						paymentReference: string,
 					): Promise<PaymentStatusResult> {
+						if (options.paymentStatus) {
+							return { paymentReference, ...options.paymentStatus(paymentReference) };
+						}
 						if (options.getPaymentStatusResult) {
 							return {
 								...options.getPaymentStatusResult,

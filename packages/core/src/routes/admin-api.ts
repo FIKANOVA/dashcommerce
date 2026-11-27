@@ -279,6 +279,7 @@ async function queryOrders(
 	const status = url.searchParams.get("status");
 	const paymentStatus = url.searchParams.get("paymentStatus");
 	const currency = url.searchParams.get("currency");
+	const channel = url.searchParams.get("channel");
 	const email = url.searchParams.get("email")?.trim().toLowerCase();
 	const from = url.searchParams.get("from");
 	const to = url.searchParams.get("to");
@@ -326,6 +327,9 @@ async function queryOrders(
 			return dateB - dateA; // desc
 		});
 		if (currency) items = items.filter((o) => o.currency === currency);
+		// Unset channel means the online shop (orders from before counter sales).
+		if (channel === "in_person") items = items.filter((o) => o.channel === "in_person");
+		if (channel === "online") items = items.filter((o) => o.channel !== "in_person");
 		if (email) {
 			items = items.filter((o) => o.customerEmail.toLowerCase().includes(email));
 		}

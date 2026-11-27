@@ -242,6 +242,12 @@ function OrderHeader({
 					<span>
 						<strong>Customer:</strong> {order.customerEmail}
 					</span>
+					{order.channel === "in_person" && (
+						<span>
+							<strong>Counter sale</strong>
+							{order.soldBy ? ` by user ${order.soldBy}` : ""}
+						</span>
+					)}
 					<span>
 						<strong>Total:</strong> <MoneyDisplay value={order.total} />
 					</span>

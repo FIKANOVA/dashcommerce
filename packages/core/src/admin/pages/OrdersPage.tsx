@@ -7,6 +7,7 @@
  *   - customer email (post-fetch substring match)
  *   - total range in minor units (post-fetch predicate)
  *   - created date range (indexed range filter)
+ *   - channel: online shop or counter sale (post-fetch)
  *
  * Cursor-based pagination: "Load more" appends the next page without
  * dropping what's already rendered so operators can keep scrolling
@@ -46,6 +47,7 @@ function orderIdFromHash(): string | null {
 interface OrdersFilters {
 	status: OrderStatus | "";
 	paymentStatus: PaymentStatus | "";
+	channel: "" | "online" | "in_person";
 	email: string;
 	minTotalMajor: number | undefined;
 	maxTotalMajor: number | undefined;
@@ -77,9 +79,16 @@ const PAYMENT_STATUS_OPTIONS: {
 	{ value: "partially-refunded", label: "Partially refunded" },
 ];
 
+const CHANNEL_OPTIONS: { value: OrdersFilters["channel"]; label: string }[] = [
+	{ value: "", label: "Online and counter" },
+	{ value: "online", label: "Online shop" },
+	{ value: "in_person", label: "Counter sales" },
+];
+
 const INITIAL: OrdersFilters = {
 	status: "",
 	paymentStatus: "",
+	channel: "",
 	email: "",
 	minTotalMajor: undefined,
 	maxTotalMajor: undefined,
@@ -106,6 +115,7 @@ function OrdersList() {
 		() => (f: OrdersFilters) => ({
 			status: f.status || undefined,
 			paymentStatus: f.paymentStatus || undefined,
+			channel: f.channel || undefined,
 			email: f.email.trim() || undefined,
 			minTotal:
 				typeof f.minTotalMajor === "number"
@@ -135,6 +145,7 @@ function OrdersList() {
 	const activeFilterCount = [
 		filters.status,
 		filters.paymentStatus,
+		filters.channel,
 		filters.email.trim(),
 		filters.minTotalMajor,
 		filters.maxTotalMajor,
@@ -169,6 +180,14 @@ function OrdersList() {
 							"paymentStatus",
 							e.currentTarget.value as PaymentStatus | "",
 						)
+					}
+				/>
+				<Select
+					label="Channel"
+					value={filters.channel}
+					options={CHANNEL_OPTIONS}
+					onChange={(e) =>
+						setFilter("channel", e.currentTarget.value as OrdersFilters["channel"])
 					}
 				/>
 				<Input
@@ -252,7 +271,12 @@ function OrdersList() {
 							window.location.hash = `/orders/${o.id}`;
 						}}
 						columns={[
-							{ key: "num", header: "Order", render: (o) => o.orderNumber },
+							{
+								key: "num",
+								header: "Order",
+								render: (o) =>
+									o.channel === "in_person" ? `${o.orderNumber} (counter)` : o.orderNumber,
+							},
 							{
 								key: "status",
 								header: "Status",

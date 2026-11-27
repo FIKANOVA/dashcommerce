@@ -92,6 +92,22 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 	let requests = 0;
 	let nextId = 55443322;
 	let lastInit: Record<string, unknown> | null = null;
+	let lastCharge: Record<string, unknown> | null = null;
+	const paymentRequests = new Map<
+		string,
+		{
+			id: number;
+			request_code: string;
+			offline_reference: string;
+			amount: number;
+			currency: string;
+			metadata: unknown;
+			description: unknown;
+			status: string;
+			paid: boolean;
+		}
+	>();
+	const terminalEvents: Array<{ path: string; body: unknown }> = [];
 	let outagesLeft = options.verifyOutages ?? 0;
 	let verifyCalls = 0;
 
@@ -193,6 +209,68 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 				},
 			});
 		}
+		if (pathname === "/terminal" && init?.method === "GET") {
+			return json({
+				status: true,
+				message: "Terminals retrieved",
+				data: [{ terminal_id: "TERM_front", name: "Front till" }],
+			});
+		}
+		if (pathname === "/customer") {
+			return json({
+				status: true,
+				message: "Customer created",
+				data: { customer_code: "CUS_fake" },
+			});
+		}
+		if (pathname === "/paymentrequest") {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			const code = `PRQ_fake${paymentRequests.size + 1}`;
+			const request = {
+				id: 7000 + paymentRequests.size,
+				request_code: code,
+				offline_reference: `46343${paymentRequests.size}`,
+				amount: body.amount as number,
+				currency: String(body.currency),
+				metadata: body.metadata,
+				description: body.description,
+				status: "pending",
+				paid: false,
+			};
+			paymentRequests.set(code, request);
+			return json({ status: true, message: "Payment request created", data: request });
+		}
+		if (/^\/terminal\/[^/]+\/event$/.test(pathname)) {
+			terminalEvents.push({ path: pathname, body: JSON.parse(String(init?.body)) });
+			return json({ status: true, message: "Event sent to Terminal", data: { id: "evt" } });
+		}
+		if (pathname.startsWith("/paymentrequest/verify/")) {
+			const request = paymentRequests.get(
+				decodeURIComponent(pathname.slice("/paymentrequest/verify/".length)),
+			);
+			if (!request) return json({ status: false, message: "Payment request not found" }, 404);
+			return json({ status: true, message: "Payment request retrieved", data: request });
+		}
+		if (pathname === "/charge") {
+			// A counter sale's M-PESA prompt: the money arrives later, like initialize.
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			lastCharge = body;
+			const momo = body.mobile_money as { phone?: string; provider?: string } | undefined;
+			if (momo?.provider !== "mpesa" || !/^\+254\d{9}$/.test(String(momo.phone))) {
+				return json({ status: false, message: "Invalid mobile money details" }, 400);
+			}
+			const reference = String(body.reference);
+			transactions.set(reference, {
+				id: nextId++,
+				amount: body.amount as number,
+				currency: String(body.currency),
+			});
+			return json({
+				status: true,
+				message: "Charge attempted",
+				data: { reference, status: "pay_offline", display_text: "Please complete authorization" },
+			});
+		}
 		if (pathname.startsWith("/transaction/verify/")) {
 			verifyCalls++;
 			if (options.verifyDelayMs) {
@@ -289,6 +367,9 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 		renew,
 		getRequests: () => requests,
 		getLastInit: () => lastInit,
+		getLastCharge: () => lastCharge,
+		paymentRequests,
+		terminalEvents,
 		getVerifyCalls: () => verifyCalls,
 	};
 }
@@ -366,7 +447,7 @@ function makeContext(
 				data: {
 					title: "Matchday ticket",
 					type: "simple",
-					prices: { KES: { amount: 150000 } },
+					prices: { KES: { amount: 150000 }, NGN: { amount: 500000 } },
 					virtual: true,
 					manage_stock: false,
 				},
@@ -1489,5 +1570,113 @@ describe("@dashcommerce/paystack subscriptions through core", () => {
 		expect(res.status).not.toBe(200);
 		expect(((await res.json()) as { error?: string }).error).toMatch(/free trial/);
 		expect(paystack.getRequests()).toBe(0);
+	});
+});
+
+describe("@dashcommerce/paystack counter sales through core", () => {
+	const EDITOR_USER = { ...ADMIN_USER, id: "user_editor", email: "till@example.com", role: 40 };
+
+	async function counterCall(
+		ctx: import("emdash").PluginContext,
+		route: string,
+		opts: { method?: string; query?: string; input?: unknown } = {},
+	) {
+		const routeCtx = {
+			...ctx,
+			request: new Request(`http://test/${route}${opts.query ?? ""}`, {
+				method: opts.method ?? "POST",
+			}),
+			input: opts.input,
+			user: EDITOR_USER,
+		} as unknown as import("emdash").RouteContext;
+		const res = (await sandbox.routes[route].handler(routeCtx, ctx)) as Response;
+		return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+	}
+
+	it("sends an M-PESA prompt, then the signed webhook creates a counter-sale order", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...paystackSettings, "settings:defaultCurrency": "KES" },
+			paystack.fetch,
+		);
+
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [{ productId: "prod_ticket", quantity: 1 }],
+				method: { type: "phone", phone: "0710 000 000" },
+			},
+		});
+		expect(started.status).toBe(200);
+		const draft = String(started.body.orderDraftId);
+		expect(started.body.status).toBe("pending");
+		expect(paystack.getLastCharge()).toMatchObject({
+			email: "till@example.com",
+			amount: 150000,
+			currency: "KES",
+			reference: `dc-${draft}`,
+			metadata: { orderDraftId: draft },
+			mobile_money: { phone: "+254710000000", provider: "mpesa" },
+		});
+
+		const payload = chargeSuccess(`dc-${draft}`, draft, 55443322);
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+
+		const status = await counterCall(ctx, "admin/counter/status", {
+			method: "GET",
+			query: `?draft=${draft}`,
+		});
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(status.body).toMatchObject({ status: "paid", orderNumber: order.orderNumber });
+		expect(order.channel).toBe("in_person");
+		expect(order.soldBy).toBe("user_editor");
+		expect(order.paymentReference).toBe(`dc-${draft}`);
+	});
+
+	it("pushes a terminal sale, then paymentrequest.success creates the order", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(paystackSettings, paystack.fetch);
+
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [{ productId: "prod_ticket", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+				currency: "NGN",
+			},
+		});
+		expect(started.status).toBe(200);
+		const draft = String(started.body.orderDraftId);
+		const request = paystack.paymentRequests.get("PRQ_fake1");
+		expect(request).toMatchObject({ amount: 500000, currency: "NGN" });
+		expect(paystack.terminalEvents).toEqual([
+			{
+				path: "/terminal/TERM_front/event",
+				body: {
+					type: "invoice",
+					action: "process",
+					data: { id: request?.id, reference: request?.offline_reference },
+				},
+			},
+		]);
+
+		// Paid on the terminal; Paystack sends the invoice details.
+		if (request) Object.assign(request, { status: "success", paid: true });
+		const payload = JSON.stringify({ event: "paymentrequest.success", data: request });
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+
+		const orders = Array.from(getCol("orders").values()) as Order[];
+		expect(orders).toHaveLength(1);
+		expect(orders[0]).toMatchObject({
+			channel: "in_person",
+			soldBy: "user_editor",
+			paymentReference: "PRQ_fake1",
+			currency: "NGN",
+		});
+		const status = await counterCall(ctx, "admin/counter/status", {
+			method: "GET",
+			query: `?draft=${draft}`,
+		});
+		expect(status.body).toMatchObject({ status: "paid", orderNumber: orders[0]?.orderNumber });
 	});
 });
