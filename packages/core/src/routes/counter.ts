@@ -20,7 +20,7 @@ import type { PluginContext, RouteContext } from "emdash";
 import { recalculate } from "../cart/calculate";
 import { holdStock, linkAttempts, releaseLock } from "../cart/lock";
 import { newCart } from "../cart/store";
-import { findOrderByPaymentIntent } from "../orders/create";
+import { WALK_IN_CUSTOMER_EMAIL, findOrderByPaymentIntent } from "../orders/create";
 import {
 	DEFAULT_PAYMENT_PROVIDER_ID,
 	getPaymentProvider,
@@ -163,6 +163,8 @@ interface SaleInput {
 	lines: SaleLine[];
 	method: CounterMethod;
 	customerEmail?: string;
+	/** For the order; a phone sale's prompt number is used when not given. */
+	customerPhone?: string;
 	currency: unknown;
 	/** The draft of the attempt this one retries. */
 	retryOf?: string;
@@ -249,6 +251,19 @@ function parseSaleInput(raw: unknown): SaleInput | string {
 		customerEmail = email;
 	}
 
+	let customerPhone: string | undefined;
+	if (
+		body.customerPhone !== undefined &&
+		body.customerPhone !== null &&
+		body.customerPhone !== ""
+	) {
+		const phone = typeof body.customerPhone === "string" ? normalisePhone(body.customerPhone) : null;
+		if (!phone) {
+			return "Enter the customer's phone number with its leading 0 or country code, for example 0712345678 or +254712345678.";
+		}
+		customerPhone = phone;
+	}
+
 	let retryOf: string | undefined;
 	if (body.retryOf !== undefined && body.retryOf !== null) {
 		if (typeof body.retryOf !== "string" || !DRAFT_ID_RE.test(body.retryOf))
@@ -261,6 +276,7 @@ function parseSaleInput(raw: unknown): SaleInput | string {
 		method: parsedMethod,
 		...(retryOf ? { retryOf } : {}),
 		...(customerEmail ? { customerEmail } : {}),
+		...(customerPhone ? { customerPhone } : {}),
 		currency: body.currency,
 	};
 }
@@ -363,16 +379,21 @@ async function startSale(
 	// their earlier, unpaid attempt rather than reserving the stock twice.
 	const sessionId = `counter:${staff.id}`;
 	const country = ((await ctx.kv.get<string>("settings:storeCountry")) ?? "KE").toUpperCase();
-	const phone = input.method.type === "phone" ? input.method.phone : undefined;
-	const email = input.customerEmail ?? staff.email;
-	if (!email || !EMAIL_RE.test(email)) {
+	const phone =
+		input.customerPhone ?? (input.method.type === "phone" ? input.method.phone : undefined);
+	// The provider needs an email to take a payment; without the customer's,
+	// the seller's stands in there. The order itself goes to the shared
+	// walk-in customer, so the sale isn't counted on the seller's record and
+	// no receipt goes to the seller.
+	const payerEmail = input.customerEmail ?? staff.email;
+	if (!payerEmail || !EMAIL_RE.test(payerEmail)) {
 		return fail("Enter the customer's email; your account has none to use instead.", 400);
 	}
 	const address = counterAddress(country, phone);
 	const base: CartState = {
 		...newCart(sessionId, currency, staff.id),
 		items,
-		customerEmail: email,
+		customerEmail: input.customerEmail ?? WALK_IN_CUSTOMER_EMAIL,
 		billingAddress: address,
 		shippingAddress: address,
 	};
@@ -411,7 +432,7 @@ async function startSale(
 				orderDraftId,
 				amount: cart.total.amount,
 				currency,
-				customer: { email, ...(phone ? { phone } : {}) },
+				customer: { email: payerEmail, ...(phone ? { phone } : {}) },
 				method: input.method,
 			},
 			credentials,

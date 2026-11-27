@@ -869,7 +869,11 @@ export async function handleNormalizedChargeSucceeded(
 	const shippingAddr = event.shippingAddress ? toCartAddress(event.shippingAddress) : null;
 	const cart: CartState = {
 		...snapshot.cart,
-		...(event.customer.email ? { customerEmail: event.customer.email } : {}),
+		// A counter sale's customer was set at the counter; the provider
+		// may only have the seller's email (see routes/counter.ts).
+		...(event.customer.email && snapshot.channel !== "in_person"
+			? { customerEmail: event.customer.email }
+			: {}),
 		...(shippingAddr ? { shippingAddress: shippingAddr } : {}),
 		...(billingAddr
 			? { billingAddress: billingAddr }

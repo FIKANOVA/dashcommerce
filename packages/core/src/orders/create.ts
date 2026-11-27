@@ -260,6 +260,13 @@ async function incrementCouponUsage(
 	}
 }
 
+/**
+ * The customer of a counter sale where staff gave no customer email. The
+ * order needs a customer; this keeps such sales off the seller's own
+ * record. `.invalid` can never be delivered to, and no receipt is sent.
+ */
+export const WALK_IN_CUSTOMER_EMAIL = "walk-in@counter.invalid";
+
 export interface CreateOrderInput {
 	paymentIntent: StripePaymentIntent;
 	cartSnapshot: CartState;
@@ -423,12 +430,14 @@ async function createClaimedOrder(
 		throw new Error("Cart snapshot is missing a valid customer email.");
 	}
 
-	// (2) Upsert customer.
+	// (2) Upsert customer. Walk-in counter sales share one record, which
+	// keeps no one's phone number.
+	const walkIn = customerEmail.toLowerCase() === WALK_IN_CUSTOMER_EMAIL;
 	const customer = await upsertCustomer(ctx, {
 		email: customerEmail.toLowerCase(),
 		firstName: billingAddress.firstName,
 		lastName: billingAddress.lastName,
-		phone: billingAddress.phone,
+		...(walkIn ? {} : { phone: billingAddress.phone }),
 		currency: cart.currency,
 		orderTotalMinor: cart.total.amount,
 		...(pi.customer ? { stripeCustomerId: pi.customer } : {}),
@@ -616,8 +625,8 @@ async function createClaimedOrder(
 		});
 	}
 
-	// (9) Receipt email (swallows its own errors).
-	await sendOrderReceipt(ctx, order, items);
+	// (9) Receipt email (swallows its own errors). A walk-in has no address.
+	if (!walkIn) await sendOrderReceipt(ctx, order, items);
 
 	return { order, duplicate: false };
 }

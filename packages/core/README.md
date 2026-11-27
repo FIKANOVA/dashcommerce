@@ -243,6 +243,8 @@ A call with no signed-in user is refused. The order detail and settings response
 
 The **Counter sale** page sells in person from the same products and stock as the shop. Staff add products, then choose how the customer pays: a prompt on the customer's phone (M-PESA through Paystack), or a card terminal when the provider lists one. Stock is held while the customer pays (15 minutes at most). The page checks `admin/counter/status` every 3 seconds and shows "Paid. Order 1042", or "Cancelled or declined" / "Timed out" (after 5 minutes) with a Retry button; a failed or timed-out sale releases the stock. If the customer still pays after a time-out, the order is still created: by the webhook, or by the status check, which asks the provider again about a timed-out sale and about any terminal sale (a card can be tapped after the page stops waiting). The page keeps checking a failed terminal sale, warns before "New sale" drops one that may still be paid, and Retry sends `retryOf`: the route refuses with 409 if the earlier attempt was paid or is still waiting, and links the two so a second payment is held for review.
 
+The customer's email and phone are optional. With an email, the order, the customer record and the receipt use it. Without one, the order goes to a shared walk-in customer (`walk-in@counter.invalid`, which keeps no phone number) and no receipt is sent, so the sale isn't counted on the seller's own customer record; the seller's email is still given to the payment provider, which needs one to take the payment. A phone given on a terminal sale is kept on the order's address (a phone sale uses the prompt number).
+
 The webhook and the status check can confirm the same payment at once. Order creation first claims the payment (a row with a unique key in the webhook dedup log), so the second caller stops before any side effect and is answered as a duplicate; a failed creation releases the claim.
 
 The order is created through the same path as an online order (stock, coupons, receipt email), from the signed webhook or the status check, whichever confirms first. It carries `channel: "in_person"` and `soldBy` (the seller's EmDash user id); `GET /admin/orders?channel=in_person` (or `online`) filters by it. A sale with no customer email uses the seller's own email for the provider and the receipt. Subscription and vendor-owned products are sold online only for now, and the product list covers simple prices (not variant pickers) and scans up to 200 products.
@@ -250,7 +252,7 @@ The order is created through the same path as an online order (stock, coupons, r
 ```
 GET    /admin/counter/setup               Provider, methods, terminals, currency
 GET    /admin/counter/products?q=         Products priced in the shop currency
-POST   /admin/counter/sale                { lines, method, customerEmail?, currency? }
+POST   /admin/counter/sale                { lines, method, customerEmail?, customerPhone?, currency? }
 GET    /admin/counter/status?draft={id}   pending | paid (orderNumber) | failed (declined | timed_out)
 ```
 
