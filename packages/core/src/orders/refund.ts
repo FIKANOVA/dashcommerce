@@ -346,6 +346,32 @@ export async function recordLostDispute(
 	return refund;
 }
 
+/**
+ * Undo `recordLostDispute` when a lost dispute later turns won: the refund
+ * row stays, marked failed so it no longer counts, and the order's refunded
+ * total and statuses are worked out again (as for a refund the provider
+ * failed). Returns false when there was nothing counted to undo.
+ */
+export async function reverseLostDispute(
+	ctx: PluginContext,
+	order: Order,
+	dispute: { providerId: string; providerDisputeId: string },
+): Promise<boolean> {
+	const key = `dispute:${dispute.providerId}:${dispute.providerDisputeId}`;
+	const row = (await refundsStore(ctx).query({ where: { stripeRefundId: key }, limit: 1 }))
+		.items[0];
+	if (!row) return false;
+	const refund = { ...(row.data as Refund), id: row.id };
+	if (refund.status !== "succeeded") return false;
+	await refundsStore(ctx).put(refund.id, {
+		...refund,
+		status: "failed",
+		reason: "Dispute lost, then won: no longer counted",
+	});
+	await reverseFailedRefund(ctx, order, refund);
+	return true;
+}
+
 export type ProviderRefundUpdateOutcome ="updated" | "unchanged" | "unknown" | "other-provider";
 
 /**
