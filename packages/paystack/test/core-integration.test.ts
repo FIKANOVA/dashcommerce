@@ -1581,6 +1581,93 @@ describe("@dashcommerce/paystack subscriptions through core", () => {
 		expect((getCol("subscriptions").get(sub.id) as { status: string }).status).toBe("canceled");
 	});
 
+	it("marks the subscription past due on a failed renewal that names no plan", async () => {
+		// Paystack's subscription.create can arrive before the first charge.success.
+		const started = await startSubscription("sess_sub_failed_noplan");
+		const { paystack, ctx, getCol } = started;
+		const { orderDraftId } = (await started.res.json()) as { orderDraftId: string };
+		const reference = String(paystack.getLastInit()?.reference);
+		const planCode = String(paystack.getLastInit()?.plan);
+		const code = paystack.subscriptions[0]?.subscription_code;
+		const created = await deliverSigned(ctx, {
+			event: "subscription.create",
+			data: {
+				subscription_code: code,
+				status: "active",
+				next_payment_date: "2026-12-27T09:00:00.000Z",
+				plan: { plan_code: planCode, interval: "monthly" },
+			},
+		});
+		expect(await created.json()).toMatchObject({ orphan: true });
+
+		const tx = paystack.transactions.get(reference);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = JSON.parse(chargeSuccess(reference, orderDraftId, tx.id)) as {
+			data: Record<string, unknown>;
+		};
+		charge.data.plan = { plan_code: planCode, interval: "monthly", currency: "KES" };
+		expect((await deliverSigned(ctx, charge)).status).toBe(200);
+		const sub = Array.from(getCol("subscriptions").values())[0] as { id: string };
+
+		// As Paystack's documented invoice payloads: the subscription, no plan.
+		const failed = await deliverSigned(ctx, {
+			event: "invoice.payment_failed",
+			data: {
+				invoice_code: "INV_noplan",
+				paid: false,
+				subscription: {
+					subscription_code: code,
+					email_token: paystack.subscriptions[0]?.email_token,
+					status: "attention",
+					next_payment_date: "2026-12-27T09:00:00.000Z",
+				},
+			},
+		});
+		expect(failed.status).toBe(200);
+		expect(await failed.json()).toMatchObject({ subscriptionId: sub.id });
+		expect((getCol("subscriptions").get(sub.id) as { status: string }).status).toBe("past_due");
+	});
+
+	it("applies a second cancellation after a resume, and still skips a redelivery", async () => {
+		const { paystack, ctx, getCol, planCode } = await subscribed("sess_sub_recancel");
+		const sub = Array.from(getCol("subscriptions").values())[0] as { id: string };
+		const code = paystack.subscriptions[0]?.subscription_code;
+		const notRenew = (nextPayment: string) => ({
+			event: "subscription.not_renew",
+			data: {
+				subscription_code: code,
+				status: "non-renewing",
+				next_payment_date: nextPayment,
+				plan: { plan_code: planCode },
+			},
+		});
+		const ending = () =>
+			(getCol("subscriptions").get(sub.id) as { cancelAtPeriodEnd: boolean }).cancelAtPeriodEnd;
+
+		await deliverSigned(ctx, notRenew("2026-12-27T09:00:00.000Z"));
+		expect(ending()).toBe(true);
+		const again = await deliverSigned(ctx, notRenew("2026-12-27T09:00:00.000Z"));
+		expect(await again.json()).toMatchObject({ duplicate: true });
+
+		// Resumed, renewed for another month, then cancelled again.
+		const resumed = (await sandbox.routes["admin/subscriptions/action"].handler(
+			{
+				request: new Request(`http://test/admin/subscriptions/action?id=${sub.id}&action=resume`, {
+					method: "POST",
+				}),
+				input: {},
+				user: ADMIN_USER,
+			} as unknown as import("emdash").RouteContext,
+			ctx,
+		)) as Response;
+		expect(resumed.status).toBe(200);
+		expect(ending()).toBe(false);
+
+		const second = await deliverSigned(ctx, notRenew("2027-01-27T09:00:00.000Z"));
+		expect(await second.json()).toMatchObject({ subscriptionId: sub.id });
+		expect(ending()).toBe(true);
+	});
+
 	it("refuses an interval Paystack can't bill before calling Paystack", async () => {
 		const { paystack, res } = await startSubscription("sess_sub_fortnight", {
 			interval: "week",

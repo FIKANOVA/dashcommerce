@@ -867,9 +867,39 @@ interface PaystackSubscriptionWebhookData {
 }
 
 /**
- * A subscription's new state, keyed by its plan code. Subscription events
- * carry `data.plan`; invoice events carry `data.subscription`, and the plan
- * is read from either. Without a plan code or a subscription code the event
+ * A short, stable fingerprint of a webhook's `data`. Paystack sends no event
+ * id, and the event name plus subscription code repeats: cancel, resume and
+ * cancel again sends `subscription.not_renew` for the same code twice. Any
+ * field that differs between the two (next payment date, status, open
+ * invoice, timestamps) changes this, while a redelivery of the same event
+ * keeps it. Keys are sorted so the fingerprint does not depend on order.
+ */
+function dataFingerprint(data: unknown): string {
+	const stable = (value: unknown): string => {
+		if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+		if (value && typeof value === "object") {
+			const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+				a < b ? -1 : a > b ? 1 : 0,
+			);
+			return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
+		}
+		return JSON.stringify(value) ?? "null";
+	};
+	// FNV-1a, 32-bit: enough to tell one delivery's payload from another's.
+	let hash = 0x811c9dc5;
+	for (const char of stable(data)) {
+		hash ^= char.charCodeAt(0);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * A subscription's new state. Core stores the plan code as the subscription
+ * id; Paystack's own `SUB_…` code goes along as `providerSubscriptionRef`.
+ * Subscription events carry `data.plan`, so core learns the code from them;
+ * invoice events carry `data.subscription`, often without a plan, and core
+ * matches them by the code it learnt. Without a subscription code the event
  * is left unhandled rather than matched by guesswork.
  */
 function subscriptionEvent(
@@ -880,7 +910,7 @@ function subscriptionEvent(
 	const mapped = SUBSCRIPTION_EVENT_STATUS[eventName];
 	const planCode = planCodeOf(data?.plan, data?.subscription?.plan);
 	const subscriptionCode = data?.subscription_code ?? data?.subscription?.subscription_code;
-	if (!mapped || !planCode || typeof subscriptionCode !== "string" || subscriptionCode === "") {
+	if (!mapped || typeof subscriptionCode !== "string" || subscriptionCode === "") {
 		return { type: "unhandled", providerEventType: eventName, raw };
 	}
 	const invoice =
@@ -888,9 +918,11 @@ function subscriptionEvent(
 	return {
 		type: "subscription.updated",
 		providerId: "paystack",
-		// Paystack sends no event id; the event, subscription and invoice stand in.
-		providerEventId: `${eventName}:${subscriptionCode}${invoice}`,
-		providerSubscriptionId: planCode,
+		// Paystack sends no event id; the event, subscription, invoice and a
+		// fingerprint of the payload stand in (see `dataFingerprint`).
+		providerEventId: `${eventName}:${subscriptionCode}${invoice}:${dataFingerprint(data)}`,
+		...(planCode ? { providerSubscriptionId: planCode } : {}),
+		providerSubscriptionRef: subscriptionCode,
 		status: mapped.status,
 		...(mapped.cancelAtPeriodEnd !== undefined
 			? { cancelAtPeriodEnd: mapped.cancelAtPeriodEnd }
