@@ -505,7 +505,8 @@ function RefundCard({
 				amount: amt,
 				currency: order.currency,
 				reason: reason || undefined,
-				restock: restock || undefined,
+				// Restock without chosen items needs a refund of the whole balance.
+				restock: (restock && fullRefund) || undefined,
 			});
 			toast.success(
 				fullRefund ? "Full refund issued" : "Refund issued",
@@ -565,7 +566,7 @@ function RefundCard({
 							/>
 						</FormField>
 					</div>
-					{items.some((i) => !i.isDigital) && (
+					{items.some((i) => !i.isDigital) && fullRefund && (
 						<Toggle
 							label="Restock items"
 							checked={restock}

@@ -20,7 +20,7 @@
 
 import type { PluginContext, StorageCollection } from "emdash";
 import { OversoldError, decrementForOrderItem } from "../inventory/decrement";
-import { restoreForOrderItem } from "../inventory/restore";
+import { clampToOutstanding, outstandingStock, restoreForOrderItem } from "../inventory/restore";
 import { CurrencyMismatchError, type Money, add, money } from "../money";
 import { loadPaymentProviderCredentials, requirePaymentProvider } from "../payment-provider";
 import type { StripeClientOptions } from "../stripe/client";
@@ -40,6 +40,8 @@ export interface LineItemRefund {
 	orderItemId: string;
 	quantity: number;
 	amount: Money;
+	/** Set by `refundOrder` when it restocks: the units actually put back. */
+	restockedQuantity?: number;
 }
 
 export interface RefundOrderInput {
@@ -79,6 +81,7 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 	if (input.amount.amount > remaining) {
 		throw new Error(`Refund ${input.amount.amount} exceeds remaining refundable ${remaining}`);
 	}
+	const lineItemRefunds = await restockLines(ctx, order, input, remaining);
 
 	// Provider call first — if this fails, we don't write anything.
 	const stripeRefund = await providerRefundWithDedup(ctx, order, input);
@@ -98,7 +101,7 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 					: "pending",
 		stripeRefundId: stripeRefund.id,
 		refundRequestId: input.idempotencyKey,
-		...(input.lineItemRefunds ? { lineItemRefunds: input.lineItemRefunds } : {}),
+		...(lineItemRefunds ? { lineItemRefunds } : {}),
 		restocked: Boolean(input.restock) && stripeRefund.status !== "failed",
 		orderStatusBefore: order.status,
 		createdAt: new Date().toISOString(),
@@ -117,17 +120,18 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 	}
 
 	// Optional restock per line item.
-	if (input.restock && input.lineItemRefunds?.length) {
+	if (input.restock && lineItemRefunds?.length) {
 		const items = await loadOrderItems(ctx, order.id);
 		const byId = new Map(items.map((it) => [it.id, it]));
-		for (const li of input.lineItemRefunds) {
+		for (const li of lineItemRefunds) {
 			const orderItem = byId.get(li.orderItemId);
 			if (!orderItem) continue;
-			if (li.quantity <= 0) continue;
+			const quantity = li.restockedQuantity ?? 0;
+			if (quantity <= 0) continue;
 			try {
 				await restoreForOrderItem(ctx, {
 					orderItem,
-					quantity: li.quantity,
+					quantity,
 					reason: "refund",
 					refundId: refund.id,
 				});
@@ -476,9 +480,11 @@ async function reverseFailedRefund(
 	const items = new Map((await loadOrderItems(ctx, order.id)).map((it) => [it.id, it]));
 	for (const li of refund.lineItemRefunds) {
 		const orderItem = items.get(li.orderItemId);
-		if (!orderItem || li.quantity <= 0) continue;
+		// Older refunds have no restockedQuantity: they put back what was asked.
+		const quantity = li.restockedQuantity ?? li.quantity;
+		if (!orderItem || quantity <= 0) continue;
 		try {
-			await decrementForOrderItem(ctx, { ...orderItem, quantity: li.quantity }, "refund_failed");
+			await decrementForOrderItem(ctx, { ...orderItem, quantity }, "refund_failed");
 		} catch (err) {
 			ctx.log.warn("Stock put back by a failed refund was not taken back", {
 				refundId: refund.id,
@@ -487,6 +493,53 @@ async function reverseFailedRefund(
 			});
 		}
 	}
+}
+
+/**
+ * The lines a refund restocks. The caller's lines when given. "Restock
+ * items" without lines (the admin's toggle) restocks everything the order
+ * still holds, which only makes sense when the refund is for the whole
+ * remaining balance; a partial one must say which items come back.
+ */
+async function restockLines(
+	ctx: PluginContext,
+	order: Order,
+	input: RefundOrderInput,
+	remaining: number,
+): Promise<LineItemRefund[] | undefined> {
+	if (!input.restock) return input.lineItemRefunds;
+	const items = await loadOrderItems(ctx, order.id);
+	if (input.lineItemRefunds?.length) {
+		// Caller's lines: restock each only as far as the order still holds
+		// that stock (a cancel or an earlier refund may have put it back, and
+		// untracked or digital items took none).
+		const byId = new Map(items.map((it) => [it.id, it]));
+		const known = input.lineItemRefunds.flatMap((li) => {
+			const orderItem = byId.get(li.orderItemId);
+			return orderItem ? [{ orderItem, quantity: Math.max(0, li.quantity) }] : [];
+		});
+		const clamped = new Map(
+			(await clampToOutstanding(ctx, order.id, known)).map((l) => [l.orderItem.id, l.quantity]),
+		);
+		return input.lineItemRefunds.map((li) => ({
+			...li,
+			restockedQuantity: clamped.get(li.orderItemId) ?? 0,
+		}));
+	}
+	if (input.amount.amount < remaining) {
+		throw new Error(
+			"To restock on a partial refund, say which items come back. Restock items on its own works with a refund of the whole remaining balance.",
+		);
+	}
+	return (await outstandingStock(ctx, order.id, items)).map(({ orderItem, quantity }) => ({
+		orderItemId: orderItem.id,
+		quantity,
+		amount: money(
+			orderItem.total.currency,
+			Math.round((orderItem.total.amount * quantity) / orderItem.quantity),
+		),
+		restockedQuantity: quantity,
+	}));
 }
 
 /** The order status recorded by the order's earliest refund, if any. */

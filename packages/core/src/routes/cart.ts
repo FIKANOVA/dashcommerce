@@ -38,7 +38,7 @@ import { verifyRestoreToken } from "../abandoned-cart/recover";
 import { resolveDiscount, validateCoupon } from "../coupons/validate";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { calculateRates } from "../shipping/calculate";
-import { pickZone, zoneRegions } from "../shipping/calculate";
+import { checkedRegion, pickZone, zoneRegions } from "../shipping/calculate";
 import { regionLabel, regionName } from "../data/regions";
 import type {
 	CartLineItem,
@@ -87,6 +87,26 @@ function withSessionCookie(
 
 function errorResponse(message: string, status = 400, setCookie?: string): Response {
 	return jsonResponse({ error: message }, withSessionCookie(setCookie, { status }));
+}
+
+async function readZones(ctx: PluginContext): Promise<ShippingZone[]> {
+	const zonesStore = (
+		ctx.storage as unknown as {
+			shipping_zones: {
+				query(opts: { limit: number }): Promise<{ items: Array<{ id: string; data: ShippingZone }> }>;
+			};
+		}
+	).shipping_zones;
+	return (await zonesStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id }));
+}
+
+/** The address with its region checked against the zones (see `checkedRegion`). */
+function withCheckedRegion<A extends { country?: string; region?: unknown }>(
+	address: A,
+	zones: ShippingZone[],
+): A {
+	const region = typeof address.region === "string" ? address.region : "";
+	return { ...address, region: checkedRegion(address.country ?? "", region, zones) };
 }
 
 const SID_COOKIE = "dashcommerce_sid";
@@ -398,8 +418,9 @@ export const cartRoutes = {
 			if (!body.address) return errorResponse("address required", 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
+			const shippingAddress = withCheckedRegion(body.address, await readZones(ctx));
 			const updated = recalculate(
-				{ ...cart, shippingAddress: body.address },
+				{ ...cart, shippingAddress },
 				await readPricingPolicy(ctx),
 			);
 			const saved = await save(ctx, updated);
@@ -427,7 +448,9 @@ export const cartRoutes = {
 			const next: CartState = { ...cart };
 			if (body.email) next.customerEmail = body.email;
 			if (body.billingAddress) next.billingAddress = body.billingAddress;
-			if (body.shippingAddress) next.shippingAddress = body.shippingAddress;
+			if (body.shippingAddress) {
+				next.shippingAddress = withCheckedRegion(body.shippingAddress, await readZones(ctx));
+			}
 			if (body.notes !== undefined) next.notes = body.notes;
 			const updated = recalculate(next, await readPricingPolicy(ctx));
 			const saved = await save(ctx, updated);
@@ -611,7 +634,9 @@ export const cartRoutes = {
 	 * (see `cart/shipping-regions`). An empty region means "elsewhere": the
 	 * address then matches only zones that cover the whole country. Without
 	 * a `region` field the cart keeps its region if the country is
-	 * unchanged, and drops it if not.
+	 * unchanged, and drops it if not. `KE-30` is taken as `30`, and a region
+	 * no zone names is stored as no region (see `checkedRegion`);
+	 * `cart/contact` and `cart/shipping-address` check theirs the same way.
 	 *
 	 * Contrast with `cart/contact`, which requires the full address
 	 * because the embedded-Elements flow has nowhere else to collect
@@ -641,7 +666,7 @@ export const cartRoutes = {
 			const prior = cart.shippingAddress;
 			const region =
 				typeof body.region === "string"
-					? body.region.trim()
+					? checkedRegion(country, body.region, await readZones(ctx))
 					: prior?.country === country
 						? (prior.region ?? "")
 						: "";

@@ -6,6 +6,7 @@
  * applicable method rates.
  */
 
+import { REGION_TABLE, regionCode } from "../data/regions";
 import { add, money, zero, type Money } from "../money";
 import type {
 	Address,
@@ -73,6 +74,30 @@ export function zoneRegions(zones: ShippingZone[]): Record<string, string[]> {
 		}
 	}
 	return out;
+}
+
+/**
+ * The region to keep on a ship-to address, checked against the regions the
+ * zones name in its country. A `CC-` prefix is dropped and a known name is
+ * turned into its code, so `KE-30` and "Nairobi" both match a zone that
+ * names `30`.
+ *
+ * A region the zones don't name is stored as no region, the same as
+ * "Elsewhere" at hosted checkout, rather than refused: it has no rate of its
+ * own, so the shopper gets the country-wide rate they would get anyway, and a
+ * typed address isn't turned away for a spelling we don't know. A real
+ * region the table knows (Mombasa, `28`) is kept as its code, so the address
+ * still says where it goes. Countries whose zones name no regions are left
+ * as given: there is nothing to check against.
+ */
+export function checkedRegion(country: string, value: string, zones: ShippingZone[]): string {
+	const cc = country.trim().toUpperCase();
+	const named = zoneRegions(zones)[cc] ?? [];
+	if (named.length === 0) return value.trim();
+	const code = regionCode(cc, value);
+	const match = named.find((r) => r.toUpperCase() === code.toUpperCase());
+	if (match) return match;
+	return REGION_TABLE[cc]?.regions.some((r) => r.code === code) ? code : "";
 }
 
 function cartSubtotal(items: CartLineItem[], currency: string): Money {

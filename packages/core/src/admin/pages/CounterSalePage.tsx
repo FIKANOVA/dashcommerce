@@ -91,6 +91,7 @@ export function CounterSalePage() {
 	const [phone, setPhone] = useState("");
 	const [terminalId, setTerminalId] = useState("");
 	const [email, setEmail] = useState("");
+	const [customerPhone, setCustomerPhone] = useState("");
 
 	const [sale, setSale] = useState<SaleState | null>(null);
 	const [submitting, setSubmitting] = useState(false);
@@ -190,6 +191,9 @@ export function CounterSalePage() {
 				method: method === "phone" ? { type: "phone", phone } : { type: "terminal", terminalId },
 				currency: setup?.currency,
 				...(email.trim() ? { customerEmail: email.trim() } : {}),
+				...(method === "terminal" && customerPhone.trim()
+					? { customerPhone: customerPhone.trim() }
+					: {}),
 				...(retryOf ? { retryOf } : {}),
 			});
 			setSale(started);
@@ -233,6 +237,7 @@ export function CounterSalePage() {
 		setLines([]);
 		setPhone("");
 		setEmail("");
+		setCustomerPhone("");
 		setSaleError(null);
 	}
 
@@ -436,12 +441,22 @@ export function CounterSalePage() {
 							onChange={(e) => setPhone(e.currentTarget.value)}
 						/>
 					) : (
-						<Select
-							label="Terminal"
-							value={terminalId}
-							options={setup.terminals.map((t) => ({ value: t.id, label: t.name }))}
-							onChange={(e) => setTerminalId(e.currentTarget.value)}
-						/>
+						<>
+							<Select
+								label="Terminal"
+								value={terminalId}
+								options={setup.terminals.map((t) => ({ value: t.id, label: t.name }))}
+								onChange={(e) => setTerminalId(e.currentTarget.value)}
+							/>
+							<Input
+								label="Customer's phone number (optional)"
+								type="tel"
+								inputMode="tel"
+								placeholder="+254712345678"
+								value={customerPhone}
+								onChange={(e) => setCustomerPhone(e.currentTarget.value)}
+							/>
+						</>
 					)}
 					<Input
 						label="Customer's email for the receipt (optional)"
@@ -449,6 +464,11 @@ export function CounterSalePage() {
 						value={email}
 						onChange={(e) => setEmail(e.currentTarget.value)}
 					/>
+					{!email.trim() && (
+						<p style={{ color: T.textMuted, fontSize: 13, margin: 0 }}>
+							Without an email the sale is recorded as a walk-in customer and no receipt is sent.
+						</p>
+					)}
 				</div>
 				{setup.terminalMessage && (
 					<p style={{ color: T.textMuted, fontSize: 13 }}>{setup.terminalMessage}</p>

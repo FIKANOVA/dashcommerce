@@ -146,7 +146,7 @@ async function cartWithMethod(ctx: PluginContext, sessionId: string, methodId: s
 }
 
 describe("pickup details on the shipping method", () => {
-	it("saves and returns them, as plain text", async () => {
+	it("saves and returns them, without control characters", async () => {
 		const { ctx } = await shop();
 		const res = await addMethod(ctx, {
 			title: "Store pickup",
@@ -164,12 +164,29 @@ describe("pickup details on the shipping method", () => {
 		const saved = (res.body.method as ShippingMethod).config;
 		expect(saved).toEqual({
 			type: "local_pickup",
-			pickup: { location: pickupDetails.location, instructions: "Ask at the front desk." },
+			pickup: { location: pickupDetails.location, instructions: "<b>Ask</b> at the front desk." },
 		});
 
 		const listed = await call(ctx, "admin/shipping");
 		const methods = listed.body.methods as ShippingMethod[];
 		expect(methods[0]?.config).toEqual(saved);
+	});
+
+	it("keeps text between angle brackets", async () => {
+		const { ctx } = await shop();
+		const res = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: {
+				type: "local_pickup",
+				pickup: { location: "Gate <B>, Example Plaza", instructions: "<5 min walk> from the stage" },
+			},
+		});
+		expect(res.status).toBe(201);
+		expect((res.body.method as ShippingMethod).config).toEqual({
+			type: "local_pickup",
+			pickup: { location: "Gate <B>, Example Plaza", instructions: "<5 min walk> from the stage" },
+		});
 	});
 
 	it("refuses text over the limit or that isn't text", async () => {
@@ -272,5 +289,87 @@ describe("checking out", () => {
 		expect(session.status).toBe(409);
 		expect(session.body.code).toBe("customer_details_required");
 		expect(session.body.missing).toEqual(["address"]);
+	});
+});
+
+describe("embedded Stripe card form", () => {
+	/** The pickup shop on Stripe Elements; Stripe creates any intent asked for. */
+	async function stripeShop() {
+		const h = await shop();
+		await h.ctx.kv.set("settings:paymentProvider", "stripe");
+		await h.ctx.kv.set("settings:checkoutMode", "embedded");
+		await h.ctx.kv.set("settings:stripeSecretKey", "sk_test_pickup");
+		(h.ctx as unknown as { http: { fetch: (url: string) => Promise<Response> } }).http = {
+			async fetch(url: string) {
+				if (!url.endsWith("/v1/payment_intents")) throw new Error(`Unexpected request: ${url}`);
+				return new Response(
+					JSON.stringify({
+						id: "pi_pickup",
+						client_secret: "pi_pickup_secret",
+						amount: 120000,
+						currency: "kes",
+						status: "requires_payment_method",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		};
+		return h;
+	}
+
+	/** A one-mug cart with the method chosen and only the shopper's email given. */
+	async function emailOnlyCart(ctx: PluginContext, sessionId: string, methodId: string) {
+		await cartWithMethod(ctx, sessionId, methodId);
+		const cart = (await ctx.kv.get(`cart:${sessionId}`)) as Record<string, unknown>;
+		await ctx.kv.set(`cart:${sessionId}`, { ...cart, billingAddress: undefined });
+	}
+
+	it("takes a pickup cart's payment without a billing or delivery address", async () => {
+		const { ctx } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: { type: "local_pickup", pickup: pickupDetails },
+		});
+		const sessionId = "sess_pickup_card";
+		await emailOnlyCart(ctx, sessionId, (method.body.method as ShippingMethod).id);
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(200);
+		expect(intent.body.paymentIntentId).toBe("pi_pickup");
+	});
+
+	it("wants both addresses when the pickup method was withdrawn before Pay", async () => {
+		const { ctx, getCol } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: { type: "local_pickup", pickup: pickupDetails },
+		});
+		const methodId = (method.body.method as ShippingMethod).id;
+		const sessionId = "sess_pickup_withdrawn";
+		await emailOnlyCart(ctx, sessionId, methodId);
+		// The merchant turns pickup off while the shopper is on the card form.
+		const row = getCol("shipping_methods").get(methodId) as Record<string, unknown>;
+		getCol("shipping_methods").set(methodId, { ...row, enabled: false });
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(400);
+		expect(intent.body.error).toBe("Billing and shipping addresses are required");
+	});
+
+	it("still wants both addresses for a delivery cart", async () => {
+		const { ctx } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Courier",
+			type: "flat_rate",
+			config: { type: "flat_rate", amount: { amount: 30000, currency: "KES" } },
+		});
+		const sessionId = "sess_delivery_card";
+		await emailOnlyCart(ctx, sessionId, (method.body.method as ShippingMethod).id);
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(400);
+		expect(intent.body.error).toBe("Billing and shipping addresses are required");
 	});
 });

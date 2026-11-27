@@ -20,6 +20,9 @@ import { type PricingPolicy, recalculate } from "../cart/calculate";
 import {
 	currentHold,
 	holdStock,
+	lastHostedSession,
+	recordHoldCheckoutSession,
+	rememberHostedSession,
 	recordHoldPaymentIntent,
 	sumActiveLocksForProduct,
 } from "../cart/lock";
@@ -46,6 +49,8 @@ import {
 	type CheckoutLineItem,
 	type CheckoutShippingOption,
 	createOneTimeCoupon,
+	expireCheckoutSession,
+	retrieveCheckoutSession,
 } from "../stripe/checkout-sessions";
 import type { StripeClientOptions } from "../stripe/client";
 import {
@@ -104,6 +109,46 @@ async function cancelEarlierIntent(
 		});
 		return false;
 	}
+}
+
+/**
+ * Expire the hosted Checkout Session of a shopper's replaced attempt.
+ * Returns false when it can't be expired (it is complete: paid, or an
+ * async payment is still settling), so the new attempt must wait.
+ */
+async function expireEarlierSession(
+	ctx: PluginContext,
+	checkoutSessionId: string,
+	client: StripeClientOptions,
+): Promise<boolean> {
+	try {
+		await expireCheckoutSession(ctx, checkoutSessionId, client);
+		return true;
+	} catch (err) {
+		try {
+			const session = await retrieveCheckoutSession(ctx, checkoutSessionId, client);
+			if (session.status === "expired") return true;
+		} catch {
+			// Fall through: without a known state, refuse rather than risk a second charge.
+		}
+		ctx.log.warn("Could not expire the shopper's earlier Checkout Session", {
+			checkoutSessionId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
+}
+
+/** The 409 for a new attempt while the shopper's earlier payment may still land. */
+function earlierPaymentProcessing(): Response {
+	return new Response(
+		JSON.stringify({
+			error:
+				"Your earlier payment is still being processed. Wait a moment, then check your email or try again.",
+			code: "earlier_payment_processing",
+		}),
+		{ status: 409, headers: { "Content-Type": "application/json" } },
+	);
 }
 
 async function loadStripeClient(ctx: PluginContext): Promise<StripeClientOptions | null> {
@@ -330,15 +375,26 @@ export const checkoutRoutes = {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
-			if (!withContact.billingAddress || !withContact.shippingAddress) {
+			const policy = await readPricingPolicy(ctx);
+			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
+			// Local pickup: nothing is delivered, so one address is enough, as
+			// at hosted checkout (the order uses it for both). Decided on the
+			// re-quoted cart: a pickup method no longer offered is dropped there.
+			const isPickup = recalculated.shippingMethod?.pickup !== undefined;
+			if (
+				isPickup
+					? !recalculated.billingAddress && !recalculated.shippingAddress
+					: !recalculated.billingAddress || !recalculated.shippingAddress
+			) {
 				return new Response(
-					JSON.stringify({ error: "Billing and shipping addresses are required" }),
+					JSON.stringify({
+						error: isPickup
+							? "A billing address is required"
+							: "Billing and shipping addresses are required",
+					}),
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
 			}
-
-			const policy = await readPricingPolicy(ctx);
-			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
 			// Never charge a total the customer didn't see: the stored cart
 			// may have changed (another tab) since the payment form showed it.
 			const expected = input.expectedTotal;
@@ -373,14 +429,7 @@ export const checkoutRoutes = {
 				earlier?.stripePaymentIntentId &&
 				!(await cancelEarlierIntent(ctx, earlier.stripePaymentIntentId, client))
 			) {
-				return new Response(
-					JSON.stringify({
-						error:
-							"Your earlier payment is still being processed. Wait a moment, then check your email or try again.",
-						code: "earlier_payment_processing",
-					}),
-					{ status: 409, headers: { "Content-Type": "application/json" } },
-				);
+				return earlierPaymentProcessing();
 			}
 
 			const orderDraftId = randomId();
@@ -637,6 +686,23 @@ export const checkoutRoutes = {
 				}
 			}
 			await save(ctx, recalculated);
+
+			// A new attempt replaces the shopper's earlier one. If that one
+			// still has an open Stripe Checkout Session (the shopper went back
+			// from Stripe's page, maybe hours ago), expire it so both can't be
+			// paid. The session pointer outlives the 15-minute hold.
+			if (provider.id === "stripe") {
+				const earlier = new Set<string>();
+				const pointed = await lastHostedSession(ctx, sessionId);
+				if (pointed) earlier.add(pointed);
+				const held = (await currentHold(ctx, sessionId))?.stripeCheckoutSessionId;
+				if (held) earlier.add(held);
+				for (const checkoutSessionId of earlier) {
+					if (!(await expireEarlierSession(ctx, checkoutSessionId, client))) {
+						return earlierPaymentProcessing();
+					}
+				}
+			}
 
 			const orderDraftId = randomId();
 
@@ -1027,6 +1093,10 @@ export const checkoutRoutes = {
 				providerId: provider.id,
 				checkoutReference: checkoutResult.checkoutReference,
 			});
+			if (provider.id === "stripe" && checkoutResult.checkoutReference) {
+				await recordHoldCheckoutSession(ctx, orderDraftId, checkoutResult.checkoutReference);
+				await rememberHostedSession(ctx, sessionId, orderDraftId, checkoutResult.checkoutReference);
+			}
 
 			return new Response(
 				JSON.stringify({

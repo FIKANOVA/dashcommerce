@@ -149,6 +149,10 @@ POST   /reviews/item                      Submit a review (moderation queue)
 GET    /config-check                      Read-only health check (Stripe keys present, etc.)
 ```
 
+Regions are ISO 3166-2 subdivision parts (`30` for Nairobi City). `cart/shipping-location`, `cart/shipping-address` and `cart/contact` take `KE-30` as `30` and a county or state name the shop knows ("Nairobi") as its code. In a country where a shipping zone names regions, a region the zones don't name is kept only if it is a real region (Mombasa stays `28`, priced as elsewhere); anything else is stored as no region, which gets the country-wide rate. Table tax rates match regions the same way, so a rate saved as "Nairobi" still applies to `30`. After a hosted Stripe payment the order keeps the cart's region rather than Stripe's free-text state.
+
+A shopper's new checkout attempt replaces their earlier one, so it can't be paid as well: `checkout/create-intent` cancels the earlier PaymentIntent, and on hosted Stripe Checkout `checkout/create-session` expires the earlier Checkout Session (both recorded on the shopper's stock hold; the last hosted session is also kept for 24 hours in its own pointer, since Stripe keeps it payable that long after the 15-minute hold ends). If Stripe won't, because the earlier payment succeeded or is still settling, the new attempt gets 409 `earlier_payment_processing`. A replaced attempt still paid later becomes an on-hold order with `metadata.duplicateOfOrderId`, for the merchant to refund.
+
 ### Admin-gated routes
 
 Same prefix, gated by emdash's admin auth:
@@ -223,6 +227,8 @@ React pages served at `/_emdash/admin/plugins/dashcommerce/*`:
 - Settings (all `settings:*` keys with per-key validation)
 - Dashboard widgets: Revenue, Low Stock, Recent Orders, Pending Reviews, Failed Renewals
 
+Stock comes back when an order is cancelled, and when it is refunded with "Restock items". Both read the inventory ledger, so stock already put back is never put back twice. "Restock items" without chosen lines (the admin's toggle) needs a refund of the whole remaining balance; a partial refund must send `lineItemRefunds` saying which items come back, or it is refused with 400.
+
 Refunds and payment settings are for EmDash Admins only. EmDash already sends every DashCommerce admin route through its `plugins:manage` permission, which only Admins hold, so Editors and below get a 403 from EmDash before DashCommerce runs. DashCommerce checks the caller's role (`ctx.user.role`) again on the money routes, so they stay admin-only if other admin routes are later opened to Editors:
 
 - `POST /admin/orders/refund` — 403 "Only an admin can issue refunds."
@@ -237,6 +243,8 @@ A call with no signed-in user is refused. The order detail and settings response
 
 The **Counter sale** page sells in person from the same products and stock as the shop. Staff add products, then choose how the customer pays: a prompt on the customer's phone (M-PESA through Paystack), or a card terminal when the provider lists one. Stock is held while the customer pays (15 minutes at most). The page checks `admin/counter/status` every 3 seconds and shows "Paid. Order 1042", or "Cancelled or declined" / "Timed out" (after 5 minutes) with a Retry button; a failed or timed-out sale releases the stock. If the customer still pays after a time-out, the order is still created: by the webhook, or by the status check, which asks the provider again about a timed-out sale and about any terminal sale (a card can be tapped after the page stops waiting). The page keeps checking a failed terminal sale, warns before "New sale" drops one that may still be paid, and Retry sends `retryOf`: the route refuses with 409 if the earlier attempt was paid or is still waiting, and links the two so a second payment is held for review.
 
+The customer's email and phone are optional. With an email, the order, the customer record and the receipt use it. Without one, the order goes to a shared walk-in customer (`walk-in@counter.invalid`, which keeps no phone number) and no receipt is sent, so the sale isn't counted on the seller's own customer record; the seller's email is still given to the payment provider, which needs one to take the payment. A phone given on a terminal sale is kept on the order's address (a phone sale uses the prompt number).
+
 The webhook and the status check can confirm the same payment at once. Order creation first claims the payment (a row with a unique key in the webhook dedup log), so the second caller stops before any side effect and is answered as a duplicate; a failed creation releases the claim.
 
 The order is created through the same path as an online order (stock, coupons, receipt email), from the signed webhook or the status check, whichever confirms first. It carries `channel: "in_person"` and `soldBy` (the seller's EmDash user id); `GET /admin/orders?channel=in_person` (or `online`) filters by it. A sale with no customer email uses the seller's own email for the provider and the receipt. Subscription and vendor-owned products are sold online only for now, and the product list covers simple prices (not variant pickers) and scans up to 200 products.
@@ -244,7 +252,7 @@ The order is created through the same path as an online order (stock, coupons, r
 ```
 GET    /admin/counter/setup               Provider, methods, terminals, currency
 GET    /admin/counter/products?q=         Products priced in the shop currency
-POST   /admin/counter/sale                { lines, method, customerEmail?, currency? }
+POST   /admin/counter/sale                { lines, method, customerEmail?, customerPhone?, currency? }
 GET    /admin/counter/status?draft={id}   pending | paid (orderNumber) | failed (declined | timed_out)
 ```
 

@@ -165,6 +165,76 @@ export async function recordHoldPaymentIntent(
 	if (lock) await createLock(ctx, { ...lock, stripePaymentIntentId: paymentIntentId });
 }
 
+/** Record the hosted Stripe Checkout Session created for a held attempt. */
+export async function recordHoldCheckoutSession(
+	ctx: PluginContext,
+	orderDraftId: string,
+	checkoutSessionId: string,
+): Promise<void> {
+	const lock = await getLock(ctx, orderDraftId);
+	if (lock) await createLock(ctx, { ...lock, stripeCheckoutSessionId: checkoutSessionId });
+}
+
+/**
+ * The shopper's last hosted Stripe Checkout Session, kept apart from the
+ * stock hold. A session can be paid for 24 hours (Stripe's default) while
+ * the hold lasts 15 minutes and is swept after that, so a later attempt
+ * reads this pointer to find the earlier session and expire it.
+ */
+interface HostedSessionPointer {
+	checkoutSessionId: string;
+	orderDraftId: string;
+	expiresAt: string;
+}
+
+const HOSTED_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function hostedSessionKey(sessionId: string): string {
+	return `stripe-checkout:${sessionId}`;
+}
+
+/** The shopper's last hosted Checkout Session id, while it could still be paid. */
+export async function lastHostedSession(
+	ctx: PluginContext,
+	sessionId: string,
+): Promise<string | null> {
+	const pointer = await ctx.kv.get<HostedSessionPointer>(hostedSessionKey(sessionId));
+	if (!pointer) return null;
+	if (Date.parse(pointer.expiresAt) <= Date.now()) {
+		await ctx.kv.delete(hostedSessionKey(sessionId));
+		return null;
+	}
+	return pointer.checkoutSessionId;
+}
+
+/** Remember the hosted Checkout Session a shopper's attempt was sent to. */
+export async function rememberHostedSession(
+	ctx: PluginContext,
+	sessionId: string,
+	orderDraftId: string,
+	checkoutSessionId: string,
+): Promise<void> {
+	const pointer: HostedSessionPointer = {
+		checkoutSessionId,
+		orderDraftId,
+		expiresAt: new Date(Date.now() + HOSTED_SESSION_TTL_MS).toISOString(),
+	};
+	await ctx.kv.set(hostedSessionKey(sessionId), pointer);
+}
+
+/**
+ * Forget the pointer once that attempt's order exists: the checkout is
+ * done, so the shopper's next purchase is not a retry of it.
+ */
+export async function forgetHostedSession(
+	ctx: PluginContext,
+	sessionId: string,
+	orderDraftId: string,
+): Promise<void> {
+	const pointer = await ctx.kv.get<HostedSessionPointer>(hostedSessionKey(sessionId));
+	if (pointer?.orderDraftId === orderDraftId) await ctx.kv.delete(hostedSessionKey(sessionId));
+}
+
 /** Attempts that replaced one another share a group, named by the first. */
 function attemptKey(orderDraftId: string): string {
 	return `attempt:${orderDraftId}`;

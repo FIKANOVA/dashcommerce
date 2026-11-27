@@ -1,3 +1,4 @@
+import { outstandingStock, restoreForOrderItem } from "../inventory/restore";
 import { orderItemFromStorage } from "../orders/order-item-storage";
 /**
  * Admin backend API — every page + widget in `admin/entry.tsx` calls
@@ -451,6 +452,12 @@ async function postOrderStatus(
 	};
 	await storeOf<Order>(ctx, "orders").put(orderId, updated);
 
+	// A cancelled order gives back the stock it still holds (a refund with
+	// "Restock items" may already have put some back).
+	if (order.status !== "cancelled" && body.status === "cancelled") {
+		await putBackCancelledStock(ctx, orderId);
+	}
+
 	// On fulfilment flip, queue a post-purchase review request. Best-effort
 	// and rate-limited inside `sendReviewRequest` via a KV marker, so a
 	// merchant flipping statuses back and forth won't cause duplicate sends.
@@ -473,6 +480,21 @@ async function postOrderStatus(
 	}
 
 	return json({ order: updated });
+}
+
+async function putBackCancelledStock(ctx: PluginContext, orderId: string): Promise<void> {
+	const items = await loadOrderItems(ctx, orderId);
+	for (const { orderItem, quantity } of await outstandingStock(ctx, orderId, items)) {
+		try {
+			await restoreForOrderItem(ctx, { orderItem, quantity, reason: "order_cancelled" });
+		} catch (err) {
+			ctx.log.warn("Stock restore failed when cancelling an order", {
+				orderId,
+				orderItemId: orderItem.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
 }
 
 async function loadOrderItems(
@@ -1004,13 +1026,14 @@ export const PICKUP_FIELD_LIMITS = {
 } as const;
 
 /**
- * Pickup details are plain text shown to shoppers. Drop markup and control
- * characters, keep line breaks, trim, and refuse anything over its limit.
+ * Pickup details are plain text shown to shoppers. Drop control characters,
+ * keep line breaks, trim, and refuse anything over its limit. Angle brackets
+ * are kept as typed ("Gate <B>", "<5 min walk"): every place that shows the
+ * text escapes it (receipt email, checkout, admin).
  */
 function plainText(value: string): string {
 	return value
 		.replace(/\r\n?/g, "\n")
-		.replace(/<[^>]*>/g, "")
 		.replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, "")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();

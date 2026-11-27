@@ -343,6 +343,11 @@ export interface Refund {
 		orderItemId: string;
 		quantity: number;
 		amount: Money;
+		/**
+		 * Units actually put back: the restock asked for, clamped to the
+		 * stock the order still held. Unset on refunds before this field.
+		 */
+		restockedQuantity?: number;
 	}>;
 	restocked: boolean;
 	/**
@@ -778,6 +783,8 @@ export interface StockLock {
 	orderDraftId: string;
 	sessionId: string;
 	stripePaymentIntentId?: string;
+	/** The hosted Stripe Checkout Session of this attempt, so a new attempt can expire it. */
+	stripeCheckoutSessionId?: string;
 	entries: StockLockEntry[];
 	expiresAt: IsoDateTime;
 	createdAt: IsoDateTime;

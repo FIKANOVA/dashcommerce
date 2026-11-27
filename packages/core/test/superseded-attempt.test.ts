@@ -6,13 +6,14 @@
  * paid is held for review instead of becoming a second normal order.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import type { RouteContext } from "emdash";
 import {
 	createMockPaymentProvider,
 	registerPaymentProvider,
 	resetPaymentProviders,
 } from "../src/payment-provider";
+import { forgetHostedSession } from "../src/cart/lock";
 import sandbox from "../src/sandbox-entry";
 import type { Order, StockLock } from "../src/types";
 import {
@@ -22,7 +23,10 @@ import {
 	ticketCart,
 } from "./helpers/route-harness";
 
-afterEach(() => resetPaymentProviders());
+afterEach(() => {
+	resetPaymentProviders();
+	setSystemTime();
+});
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), {
@@ -144,6 +148,150 @@ describe("checkout/create-intent with an earlier attempt", () => {
 		const second = await shop.pay("sess_a");
 		expect(second.status).toBe(409);
 		expect(second.body.code).toBe("earlier_payment_processing");
+	});
+});
+
+/**
+ * A shop on hosted Stripe Checkout. `earlier` says how Stripe answers for
+ * an earlier session: expirable, or not (expire refused and the session is
+ * in `status`).
+ */
+function hostedStripeShop(earlier: { expirable: true } | { expirable: false; status: string }) {
+	let created = 0;
+	const expired: string[] = [];
+	const bodies: URLSearchParams[] = [];
+	const { ctx, kvStore } = makeRouteContext(
+		{
+			"settings:paymentProvider": "stripe",
+			"settings:checkoutMode": "hosted",
+			"settings:stripeSecretKey": "sk_test_x",
+		},
+		async (url, init) => {
+			const expire = url.match(/\/v1\/checkout\/sessions\/([^/]+)\/expire$/);
+			if (expire?.[1] && init?.method === "POST") {
+				if (!earlier.expirable) {
+					return json(
+						{
+							error: {
+								code: "checkout_session_unexpected_state",
+								message: `This Checkout Session has a status of ${earlier.status} and can't be expired.`,
+							},
+						},
+						400,
+					);
+				}
+				expired.push(expire[1]);
+				return json({ id: expire[1], object: "checkout.session", status: "expired" });
+			}
+			const retrieve = url.match(/\/v1\/checkout\/sessions\/([^/]+)$/);
+			if (retrieve?.[1] && init?.method === "GET") {
+				const status = earlier.expirable ? "expired" : earlier.status;
+				return json({ id: retrieve[1], object: "checkout.session", status });
+			}
+			if (url.endsWith("/v1/checkout/sessions") && init?.method === "POST") {
+				created += 1;
+				bodies.push(new URLSearchParams(String(init.body ?? "")));
+				return json({
+					id: `cs_${created}`,
+					object: "checkout.session",
+					mode: "payment",
+					status: "open",
+					url: `https://checkout.stripe.com/c/pay/cs_${created}`,
+				});
+			}
+			throw new Error(`Unexpected request: ${init?.method} ${url}`);
+		},
+	);
+
+	async function pay(sessionId: string) {
+		// The shopper comes back from Stripe's page to the same cart.
+		await ctx.kv.set(`cart:${sessionId}`, ticketCart(sessionId));
+		const routeCtx = {
+			...ctx,
+			request: new Request("http://test/checkout/create-session", {
+				method: "POST",
+				headers: { Cookie: `dashcommerce_sid=${sessionId}` },
+			}),
+			input: {},
+		} as unknown as RouteContext;
+		const res = (await sandbox.routes["checkout/create-session"].handler(routeCtx, ctx)) as Response;
+		return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+	}
+
+	const hold = (sessionId: string) => {
+		const draft = kvStore.get(`hold:${sessionId}`) as string | undefined;
+		return draft ? (kvStore.get(`lock:${draft}`) as StockLock | undefined) : undefined;
+	};
+
+	return { ctx, pay, hold, expired, bodies, created: () => created };
+}
+
+describe("checkout/create-session (hosted Stripe) with an earlier attempt", () => {
+	it("records the Checkout Session on the hold", async () => {
+		const shop = hostedStripeShop({ expirable: true });
+		expect((await shop.pay("sess_h")).status).toBe(200);
+		expect(shop.expired).toEqual([]);
+		expect(shop.hold("sess_h")?.stripeCheckoutSessionId).toBe("cs_1");
+	});
+
+	it("expires the earlier attempt's Checkout Session before starting a new one", async () => {
+		const shop = hostedStripeShop({ expirable: true });
+		expect((await shop.pay("sess_h")).status).toBe(200);
+
+		const second = await shop.pay("sess_h");
+		expect(second.status).toBe(200);
+		expect(second.body.sessionId).toBe("cs_2");
+		expect(shop.expired).toEqual(["cs_1"]);
+		expect(shop.hold("sess_h")?.stripeCheckoutSessionId).toBe("cs_2");
+	});
+
+	it("keeps the 15-minute hold and Stripe's own session lifetime", async () => {
+		const start = new Date("2026-11-27T10:00:00Z");
+		setSystemTime(start);
+		const shop = hostedStripeShop({ expirable: true });
+		expect((await shop.pay("sess_h")).status).toBe(200);
+		expect(shop.bodies[0]?.has("expires_at")).toBe(false);
+		expect(Date.parse(shop.hold("sess_h")?.expiresAt ?? "")).toBe(start.getTime() + 15 * 60 * 1000);
+	});
+
+	for (const [after, ms] of [
+		["20 minutes", 20 * 60 * 1000],
+		["5 hours", 5 * 60 * 60 * 1000],
+	] as const) {
+		it(`still expires the earlier session on a retry ${after} later, after the hold ended`, async () => {
+			const start = new Date("2026-11-27T10:00:00Z");
+			setSystemTime(start);
+			const shop = hostedStripeShop({ expirable: true });
+			expect((await shop.pay("sess_h")).status).toBe(200);
+
+			setSystemTime(new Date(start.getTime() + ms));
+			expect(shop.hold("sess_h") && Date.parse(shop.hold("sess_h")?.expiresAt ?? "") > Date.now()).toBe(false);
+			const second = await shop.pay("sess_h");
+			expect(second.status).toBe(200);
+			expect(shop.expired).toEqual(["cs_1"]);
+		});
+	}
+
+	it("doesn't hold a new purchase back once the earlier checkout's order exists", async () => {
+		const shop = hostedStripeShop({ expirable: false, status: "complete" });
+		const first = await shop.pay("sess_h");
+		// Order creation forgets the pointer (and releases the hold).
+		await forgetHostedSession(shop.ctx, "sess_h", first.body.orderDraftId as string);
+		await shop.ctx.kv.delete("hold:sess_h");
+		expect((await shop.pay("sess_h")).status).toBe(200);
+	});
+
+	it("refuses the new attempt when the earlier session is already complete", async () => {
+		const shop = hostedStripeShop({ expirable: false, status: "complete" });
+		const first = await shop.pay("sess_h");
+		expect(first.status).toBe(200);
+
+		const second = await shop.pay("sess_h");
+		expect(second.status).toBe(409);
+		expect(second.body.code).toBe("earlier_payment_processing");
+		// No second session, and the earlier attempt keeps its hold.
+		expect(shop.created()).toBe(1);
+		expect(shop.hold("sess_h")?.orderDraftId).toBe(first.body.orderDraftId as string);
 	});
 });
 

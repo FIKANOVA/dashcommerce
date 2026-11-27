@@ -421,3 +421,95 @@ describe("orders list: channel filter", () => {
 		expect(await list("online")).toEqual(["online_order"]);
 	});
 });
+
+describe("counter sale: the customer", () => {
+	/** Pay a counter sale through the status check, with sent emails recorded. */
+	async function paidSale(input: Record<string, unknown>) {
+		const h = shop();
+		const sent: Array<{ to: string }> = [];
+		(h.ctx as unknown as { email: unknown }).email = {
+			async send(msg: { to: string }) {
+				sent.push(msg);
+			},
+		};
+		const res = await call(h.ctx, "admin/counter/sale", EDITOR_USER, { input });
+		expect(res.status).toBe(200);
+		h.setLive({ status: "succeeded", amount: 160_000, currency: "KES" });
+		const draft = res.body.orderDraftId as string;
+		expect((await status(h.ctx, draft, EDITOR_USER)).body.status).toBe("paid");
+		const order = Array.from(h.getCol("orders").values())[0] as Order;
+		const customers = Array.from(h.getCol("customers").values()) as Array<{
+			email: string;
+			phone?: string;
+			ordersCount: number;
+		}>;
+		return { ...h, order, customers, sent };
+	}
+
+	it("uses the customer's email for the order, the customer record and the receipt", async () => {
+		const { order, customers, sent, started } = await paidSale({
+			...PHONE_SALE,
+			customerEmail: "Fan@Example.com",
+		});
+		expect(order.customerEmail).toBe("fan@example.com");
+		expect(customers.map((c) => c.email)).toEqual(["fan@example.com"]);
+		expect(sent.map((m) => m.to)).toEqual(["fan@example.com"]);
+		expect(started[0]?.customer.email).toBe("fan@example.com");
+	});
+
+	it("without an email, records a walk-in and leaves the seller's record and inbox alone", async () => {
+		const { order, customers, sent, started } = await paidSale(PHONE_SALE);
+		expect(order.customerEmail).toBe("walk-in@counter.invalid");
+		expect(customers.map((c) => c.email)).toEqual(["walk-in@counter.invalid"]);
+		expect(customers.some((c) => c.email === EDITOR_USER.email)).toBe(false);
+		// The shared walk-in record keeps no one's phone; the order does.
+		expect(customers[0]?.phone).toBeUndefined();
+		expect(order.billingAddress.phone).toBe("+254712345678");
+		expect(sent).toEqual([]);
+		// The provider still needs an email to take the payment.
+		expect(started[0]?.customer.email).toBe(EDITOR_USER.email);
+	});
+
+	it("keeps the walk-in when the provider's webhook carries the seller's email", async () => {
+		const { ctx, getCol, setLive } = shop();
+		const sale = await startPhoneSale(ctx);
+		setLive({ status: "succeeded", amount: 160_000, currency: "KES" });
+		await deliverWebhook(
+			ctx,
+			JSON.stringify({
+				id: "evt_walk_in",
+				type: "charge.succeeded",
+				orderDraftId: sale.orderDraftId,
+				paymentReference: `mock_counter_${sale.orderDraftId}`,
+				amount: 160_000,
+				currency: "KES",
+				email: EDITOR_USER.email,
+			}),
+			{ "x-mock-signature": "test-secret" },
+		);
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.customerEmail).toBe("walk-in@counter.invalid");
+	});
+
+	it("takes an optional customer phone on a terminal sale", async () => {
+		const { ctx, started } = shop();
+		const res = await call(ctx, "admin/counter/sale", ADMIN_USER, {
+			input: {
+				lines: [{ productId: "prod_ticket", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+				customerPhone: "0712 345 678",
+			},
+		});
+		expect(res.status).toBe(200);
+		expect(started[0]?.customer.phone).toBe("0712345678");
+
+		const bad = await call(ctx, "admin/counter/sale", ADMIN_USER, {
+			input: {
+				lines: [{ productId: "prod_ticket", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+				customerPhone: "call me",
+			},
+		});
+		expect(bad.status).toBe(400);
+	});
+});

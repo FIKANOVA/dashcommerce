@@ -141,3 +141,30 @@ export function regionName(country: string, code: string): string {
 export function regionLabel(country: string): string {
 	return REGION_TABLE[country]?.label ?? "Region";
 }
+
+/** Names compare loosely: "Nairobi", "nairobi city" and "Nairobi County" are one key. */
+function nameKey(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z]/g, "")
+		.replace(/(city|county)$/, "");
+}
+
+/**
+ * The ISO 3166-2 subdivision part for a region a shopper or a payment page
+ * gave: `KE-30` becomes `30` when the country is KE, and a name the table
+ * knows ("Nairobi", "nairobi city") becomes its code. Anything else comes
+ * back trimmed, as given.
+ */
+export function regionCode(country: string, value: string): string {
+	const cc = country.trim().toUpperCase();
+	let region = value.trim();
+	if (cc && region.toUpperCase().startsWith(`${cc}-`)) region = region.slice(cc.length + 1).trim();
+	const known = REGION_TABLE[cc]?.regions;
+	if (!known || region === "") return region;
+	const byCode = known.find((r) => r.code === region.toUpperCase());
+	if (byCode) return byCode.code;
+	const key = nameKey(region);
+	if (!key) return region;
+	return known.find((r) => nameKey(r.name) === key)?.code ?? region;
+}
