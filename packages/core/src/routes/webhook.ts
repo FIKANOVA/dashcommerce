@@ -29,6 +29,7 @@
 import type { PluginContext, RouteContext, StorageCollection } from "emdash";
 import { deleteLock, getLock } from "../cart/lock";
 import { clear as clearCart } from "../cart/store";
+import { regionCode } from "../data/regions";
 import { sendSubscriptionRenewed, sendVendorActivated, sendVendorPayout } from "../emails";
 import { money } from "../money";
 import {
@@ -279,11 +280,23 @@ function addressFromSession(
 		line1: addr.line1 ?? "",
 		...(addr.line2 ? { line2: addr.line2 } : {}),
 		city: addr.city ?? "",
-		region: addr.state ?? "",
+		// Stripe's state is free text ("Nairobi"); store the ISO code we know.
+		region: regionCode(addr.country, addr.state ?? ""),
 		postalCode: addr.postal_code ?? "",
 		country: addr.country.toUpperCase() as CountryCode,
 		...(phone ? { phone } : {}),
 	};
+}
+
+/**
+ * The ship-to address the payment page collected, with the region the cart
+ * priced shipping on. The shopper chose that region before paying (hosted
+ * checkout asks for it when a zone names regions); the payment page's own
+ * region field is free text and may say something else.
+ */
+function keepCartRegion(collected: Address, cartAddress: Address | undefined): Address {
+	if (!cartAddress?.region || cartAddress.country !== collected.country) return collected;
+	return { ...collected, region: cartAddress.region };
 }
 
 async function loadStripeClient(ctx: PluginContext): Promise<StripeClientOptions | null> {
@@ -479,11 +492,14 @@ async function handleCheckoutSessionCompleted(
 	// Merge session-collected contact into the cart snapshot. Stripe is
 	// canonical here — a customer who typed a different email/address
 	// on Stripe's page overrides the partial we captured pre-redirect.
-	const shippingAddr = addressFromSession(
+	const collectedShipping = addressFromSession(
 		session.shipping_details?.name ?? session.customer_details?.name,
 		session.shipping_details?.address ?? session.customer_details?.address,
 		session.shipping_details?.phone ?? session.customer_details?.phone,
 	);
+	const shippingAddr = collectedShipping
+		? keepCartRegion(collectedShipping, snapshot.cart.shippingAddress)
+		: null;
 	const billingAddr = addressFromSession(
 		session.customer_details?.name,
 		session.customer_details?.address,
