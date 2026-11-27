@@ -22,8 +22,11 @@ import type {
 	PaymentProviderRuntimeContext,
 	PaymentStatusResult,
 	ProviderSubscriptionInfo,
+	PaymentProviderTerminal,
 	RefundResult,
 	ResolvePayoutAccountInput,
+	StartInPersonPaymentInput,
+	StartInPersonPaymentResult,
 	VerifyWebhookInput,
 	VerifyWebhookResult,
 } from "@dashcommerce/core/payment-provider";
@@ -854,6 +857,166 @@ function subscriptionEvent(
 	};
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// In-person (counter) payments
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Charge API `mobile_money.provider` for a phone prompt, by currency. Only
+ * M-PESA for now: Ghana's networks each need their own code, which the
+ * counter page does not ask for yet.
+ */
+const PHONE_PROVIDER: Record<string, string> = { KES: "mpesa" };
+
+/** Paystack's payment requests (and so terminals) take these currencies only. */
+const TERMINAL_CURRENCIES = new Set(["NGN", "GHS", "ZAR", "USD"]);
+
+/** Payment request codes; a counter terminal sale's payment reference. */
+const PAYMENT_REQUEST_PREFIX = "PRQ_";
+
+/** Paystack asks for M-PESA numbers with the country code: +2547…, +2541…. */
+export function paystackPhone(phone: string, currency: string): string {
+	const digits = phone.replace(/[^\d+]/g, "");
+	if (currency === "KES") {
+		if (/^0[17]\d{8}$/.test(digits)) return `+254${digits.slice(1)}`;
+		if (/^254[17]\d{8}$/.test(digits)) return `+${digits}`;
+	}
+	return digits;
+}
+
+/** Charge statuses from https://paystack.com/docs/api/charge. */
+function chargeStatus(status: string | undefined): StartInPersonPaymentResult["status"] {
+	if (status === "success") return "succeeded";
+	if (status === "failed") return "failed";
+	return "pending";
+}
+
+interface PaystackChargeData {
+	reference?: string;
+	status?: string;
+	display_text?: string;
+	message?: string;
+	gateway_response?: string;
+}
+
+interface PaystackPaymentRequestData {
+	id: number;
+	request_code: string;
+	offline_reference?: string;
+	status?: string;
+	paid?: boolean;
+	amount?: number;
+	currency?: string;
+}
+
+interface PaystackTerminalRow {
+	terminal_id?: string;
+	name?: string | null;
+	serial_number?: string | null;
+}
+
+async function startPhonePayment(
+	ctx: PaymentProviderRuntimeContext,
+	input: StartInPersonPaymentInput & { method: { type: "phone"; phone: string } },
+	client: PaystackClientOptions,
+	currency: string,
+): Promise<StartInPersonPaymentResult> {
+	const provider = PHONE_PROVIDER[currency];
+	if (!provider) {
+		throw new Error("Paystack phone prompts are for M-PESA in Kenya (KES) only for now");
+	}
+	const reference = paystackReferenceFor(input.orderDraftId);
+	const data = await call<PaystackChargeData>(ctx, {
+		client,
+		path: "/charge",
+		body: {
+			email: input.customer.email,
+			amount: input.amount,
+			currency,
+			reference,
+			metadata: { orderDraftId: input.orderDraftId, channel: "in_person" },
+			mobile_money: { phone: paystackPhone(input.method.phone, currency), provider },
+		},
+	});
+	const status = chargeStatus(data.status);
+	const reason = data.message ?? data.gateway_response;
+	return {
+		// The webhook and /transaction/verify use the same reference.
+		paymentReference: data.reference ?? reference,
+		status,
+		...(status === "failed" && reason ? { reason } : {}),
+	};
+}
+
+/**
+ * A payment request (invoice) pushed to the terminal. Paystack's
+ * `paymentrequest.success` webhook is not mapped, so the counter page's
+ * status check confirms it through /paymentrequest/verify.
+ */
+async function startTerminalPayment(
+	ctx: PaymentProviderRuntimeContext,
+	input: StartInPersonPaymentInput & { method: { type: "terminal"; terminalId: string } },
+	client: PaystackClientOptions,
+	currency: string,
+): Promise<StartInPersonPaymentResult> {
+	if (!TERMINAL_CURRENCIES.has(currency)) throw new CurrencyNotSupportedError(currency);
+	const customer = await call<{ customer_code?: string }>(ctx, {
+		client,
+		path: "/customer",
+		body: { email: input.customer.email, ...(input.customer.phone ? { phone: input.customer.phone } : {}) },
+	});
+	if (!customer.customer_code) throw new Error("Paystack returned no customer code");
+	const request = await call<PaystackPaymentRequestData>(ctx, {
+		client,
+		path: "/paymentrequest",
+		body: {
+			customer: customer.customer_code,
+			amount: input.amount,
+			currency,
+			description: `Counter sale, order draft ${input.orderDraftId}`,
+			send_notification: false,
+		},
+	});
+	if (!request.request_code || !request.offline_reference) {
+		throw new Error("Paystack returned no payment request to send to the terminal");
+	}
+	await call(ctx, {
+		client,
+		path: `/terminal/${encodeURIComponent(input.method.terminalId)}/event`,
+		body: {
+			type: "invoice",
+			action: "process",
+			data: { id: request.id, reference: request.offline_reference },
+		},
+	});
+	return { paymentReference: request.request_code, status: "pending" };
+}
+
+async function paymentRequestStatus(
+	ctx: PaymentProviderRuntimeContext,
+	client: PaystackClientOptions,
+	requestCode: string,
+): Promise<PaymentStatusResult> {
+	const data = await call<PaystackPaymentRequestData>(ctx, {
+		client,
+		method: "GET",
+		path: `/paymentrequest/verify/${encodeURIComponent(requestCode)}`,
+	});
+	const status =
+		data.paid === true || data.status === "success"
+			? "succeeded"
+			: data.status === "cancelled" || data.status === "failed"
+				? "failed"
+				: "pending";
+	return {
+		status,
+		paymentReference: requestCode,
+		...(typeof data.amount === "number" ? { amount: data.amount } : {}),
+		...(data.currency ? { currency: data.currency.toUpperCase() } : {}),
+		...(status === "failed" ? { reason: `Payment request ${data.status}` } : {}),
+	};
+}
+
 export const paystackPaymentProvider: PaymentProvider = {
 	id: "paystack",
 	label: "Paystack",
@@ -870,6 +1033,10 @@ export const paystackPaymentProvider: PaymentProvider = {
 	description: "Card and M-Pesa payments for African shoppers, settled in your local currency.",
 	// Hosted page, or the Popup over the store's checkout (./checkout-client).
 	checkoutStyles: ["hosted", "on_page"],
+
+	// Counter sales: an M-PESA prompt on the customer's phone, or a card
+	// terminal (core offers terminals only when listTerminals returns some).
+	inPersonMethods: ["phone", "terminal"],
 
 	// Current scheme first; see ./webhook-verify for both.
 	webhookHeaders: ["paystack-signature", "x-paystack-signature"],
@@ -1150,6 +1317,10 @@ export const paystackPaymentProvider: PaymentProvider = {
 			};
 		}
 
+		if (paymentOrCheckoutReference.startsWith(PAYMENT_REQUEST_PREFIX)) {
+			return paymentRequestStatus(ctx, client, paymentOrCheckoutReference);
+		}
+
 		const data = await call<PaystackVerifyData>(ctx, {
 			client,
 			method: "GET",
@@ -1268,6 +1439,11 @@ export const paystackPaymentProvider: PaymentProvider = {
 		if (!transactionRef) {
 			throw new Error("Paystack refund requires paymentReference");
 		}
+		if (transactionRef.startsWith(PAYMENT_REQUEST_PREFIX)) {
+			throw new Error(
+				"This counter sale was paid on a Paystack terminal; refund it in your Paystack dashboard",
+			);
+		}
 
 		// Paystack accepts an identical second refund as a new one (tested on
 		// 19 Nov 2026), so a retry with the same refundRequestId must find the
@@ -1293,6 +1469,43 @@ export const paystackPaymentProvider: PaymentProvider = {
 			amount: data.amount,
 			currency: (data.currency ?? input.currency).toUpperCase(),
 		};
+	},
+
+	async listTerminals(
+		ctx: PaymentProviderRuntimeContext,
+		credentials: PaymentProviderCredentials,
+	): Promise<PaymentProviderTerminal[]> {
+		const rows = await call<PaystackTerminalRow[]>(ctx, {
+			client: toPaystackClient(credentials),
+			method: "GET",
+			path: "/terminal?per_page=100",
+		});
+		const terminals: PaymentProviderTerminal[] = [];
+		for (const row of Array.isArray(rows) ? rows : []) {
+			const id = row?.terminal_id?.trim();
+			if (!id) continue;
+			terminals.push({ id, name: row.name?.trim() || row.serial_number?.trim() || id });
+		}
+		return terminals;
+	},
+
+	async startInPersonPayment(
+		ctx: PaymentProviderRuntimeContext,
+		input: StartInPersonPaymentInput,
+		credentials: PaymentProviderCredentials,
+	): Promise<StartInPersonPaymentResult> {
+		const email = input.customer.email?.trim();
+		if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+			throw new Error("Paystack needs an email for every payment");
+		}
+		const currency = input.currency.trim().toUpperCase();
+		const client = toPaystackClient(credentials);
+		const withEmail = { ...input, customer: { ...input.customer, email } };
+		const method = input.method;
+		if (method.type === "phone") {
+			return startPhonePayment(ctx, { ...withEmail, method }, client, currency);
+		}
+		return startTerminalPayment(ctx, { ...withEmail, method }, client, currency);
 	},
 
 	/**
