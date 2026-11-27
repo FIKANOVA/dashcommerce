@@ -374,9 +374,9 @@ function DisputeCard({ order }: { order: Order }) {
 			)}
 			{lost && vendorShares && (
 				<Alert type="warning" title="Vendor shares were not taken back">
-					This payment was split with vendors. The lost dispute took the whole amount back from
-					the store, but the vendors keep the shares they were paid. DashCommerce doesn't recover
-					them; settle it with the vendors yourself.
+					This payment was split with vendors. The lost dispute took the whole amount back from the
+					store, but the vendors keep the shares they were paid. DashCommerce doesn't recover them;
+					settle it with the vendors yourself.
 				</Alert>
 			)}
 			<Table<OrderDispute>

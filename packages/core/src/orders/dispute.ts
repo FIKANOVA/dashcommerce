@@ -25,8 +25,7 @@ function ordersStore(ctx: PluginContext): OrdersStore {
 
 type InvoiceStore = StorageCollection<SubscriptionInvoice>;
 function invoiceStore(ctx: PluginContext): InvoiceStore {
-	return (ctx.storage as unknown as { subscription_invoices: InvoiceStore })
-		.subscription_invoices;
+	return (ctx.storage as unknown as { subscription_invoices: InvoiceStore }).subscription_invoices;
 }
 
 export type DisputeEvent = Extract<NormalizedPaymentEvent, { type: "dispute.updated" }>;
@@ -184,7 +183,10 @@ async function applyRenewalDispute(
 		providerDisputeId: dispute.providerDisputeId,
 	};
 	if (dispute.status === "lost") {
-		ctx.log.warn("Dispute lost on a subscription renewal; not counted against any order", logFields);
+		ctx.log.warn(
+			"Dispute lost on a subscription renewal; not counted against any order",
+			logFields,
+		);
 	}
 	if (previous) return "updated";
 

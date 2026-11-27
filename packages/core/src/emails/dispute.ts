@@ -77,7 +77,9 @@ export function composeDisputeAlert(input: ComposeDisputeAlertInput): ComposedEm
 	const opening = `A customer disputed ${amount} on ${what}.`;
 	const outcome: string[] =
 		dispute.status === "won"
-			? [`${providerLabel} has already settled it in your favour, so you keep the money. Nothing to do.`]
+			? [
+					`${providerLabel} has already settled it in your favour, so you keep the money. Nothing to do.`,
+				]
 			: dispute.status === "lost"
 				? [
 						`${providerLabel} has already settled it for the customer, so the money goes back to them.`,

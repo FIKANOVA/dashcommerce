@@ -294,7 +294,11 @@ describe("dispute.updated follow-ups", () => {
 			providerSplits: {
 				providerId: "acme",
 				allocations: [
-					{ vendorId: "v1", accountReference: "ACCT_1", amount: { currency: "KES", amount: 100000 } },
+					{
+						vendorId: "v1",
+						accountReference: "ACCT_1",
+						amount: { currency: "KES", amount: 100000 },
+					},
 				],
 				capturedAt: "2026-11-01T00:00:00.000Z",
 			},
