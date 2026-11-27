@@ -373,13 +373,16 @@ export const checkoutRoutes = {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
+			const policy = await readPricingPolicy(ctx);
+			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
 			// Local pickup: nothing is delivered, so one address is enough, as
-			// at hosted checkout (the order uses it for both).
-			const isPickup = withContact.shippingMethod?.pickup !== undefined;
+			// at hosted checkout (the order uses it for both). Decided on the
+			// re-quoted cart: a pickup method no longer offered is dropped there.
+			const isPickup = recalculated.shippingMethod?.pickup !== undefined;
 			if (
 				isPickup
-					? !withContact.billingAddress && !withContact.shippingAddress
-					: !withContact.billingAddress || !withContact.shippingAddress
+					? !recalculated.billingAddress && !recalculated.shippingAddress
+					: !recalculated.billingAddress || !recalculated.shippingAddress
 			) {
 				return new Response(
 					JSON.stringify({
@@ -390,9 +393,6 @@ export const checkoutRoutes = {
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
 			}
-
-			const policy = await readPricingPolicy(ctx);
-			const recalculated = await finalizeCheckoutCart(ctx, withContact, items, policy);
 			// Never charge a total the customer didn't see: the stored cart
 			// may have changed (another tab) since the payment form showed it.
 			const expected = input.expectedTotal;

@@ -339,6 +339,25 @@ describe("embedded Stripe card form", () => {
 		expect(intent.body.paymentIntentId).toBe("pi_pickup");
 	});
 
+	it("wants both addresses when the pickup method was withdrawn before Pay", async () => {
+		const { ctx, getCol } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: { type: "local_pickup", pickup: pickupDetails },
+		});
+		const methodId = (method.body.method as ShippingMethod).id;
+		const sessionId = "sess_pickup_withdrawn";
+		await emailOnlyCart(ctx, sessionId, methodId);
+		// The merchant turns pickup off while the shopper is on the card form.
+		const row = getCol("shipping_methods").get(methodId) as Record<string, unknown>;
+		getCol("shipping_methods").set(methodId, { ...row, enabled: false });
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(400);
+		expect(intent.body.error).toBe("Billing and shipping addresses are required");
+	});
+
 	it("still wants both addresses for a delivery cart", async () => {
 		const { ctx } = await stripeShop();
 		const method = await addMethod(ctx, {
