@@ -33,6 +33,7 @@ import { sendSubscriptionRenewed, sendVendorActivated, sendVendorPayout } from "
 import { money } from "../money";
 import {
 	createOrderFromPaymentIntent,
+	isOrderCreationInProgress,
 	findOrderByPaymentIntent,
 	loadOrderItems,
 } from "../orders/create";
@@ -873,7 +874,9 @@ export async function handleNormalizedChargeSucceeded(
 		}
 	}
 
-	const { order, duplicate } = await createOrderFromPaymentIntent(ctx, {
+	let created: Awaited<ReturnType<typeof createOrderFromPaymentIntent>>;
+	try {
+		created = await createOrderFromPaymentIntent(ctx, {
 		paymentIntent: {
 			id: paymentReference,
 			amount,
@@ -891,7 +894,17 @@ export async function handleNormalizedChargeSucceeded(
 		orderDraftId: event.orderDraftId,
 		...(snapshot.channel ? { channel: snapshot.channel } : {}),
 		...(snapshot.soldBy ? { soldBy: snapshot.soldBy } : {}),
-	});
+		});
+	} catch (err) {
+		// The counter page's status check (or another delivery) is creating
+		// this order right now: nothing was written here, so it's a duplicate.
+		if (!isOrderCreationInProgress(err)) throw err;
+		return new Response(JSON.stringify({ received: true, duplicate: true, inProgress: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+	const { order, duplicate } = created;
 
 	if (!duplicate) {
 		await ctx.kv.delete(draftKey(event.orderDraftId));

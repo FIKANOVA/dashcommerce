@@ -202,6 +202,19 @@ describe("counter sale: phone", () => {
 		expect([...kvStore.keys()].some((k) => k.startsWith("lock:"))).toBe(false);
 	});
 
+	it("refuses a bare number with no leading 0 or country code", async () => {
+		const { ctx, started } = shop();
+		const res = await call(ctx, "admin/counter/sale", EDITOR_USER, {
+			input: { ...PHONE_SALE, method: { type: "phone", phone: "712345678" } },
+		});
+		expect(res.status).toBe(400);
+		expect(started).toHaveLength(0);
+		const local = await call(ctx, "admin/counter/sale", EDITOR_USER, {
+			input: { ...PHONE_SALE, method: { type: "phone", phone: "0712 345 678" } },
+		});
+		expect(local.status).toBe(200);
+	});
+
 	it("refuses a phone number that isn't one", async () => {
 		const { ctx, started } = shop();
 		const res = await call(ctx, "admin/counter/sale", EDITOR_USER, {
@@ -209,6 +222,96 @@ describe("counter sale: phone", () => {
 		});
 		expect(res.status).toBe(400);
 		expect(started).toHaveLength(0);
+	});
+});
+
+describe("counter sale: late payments and races", () => {
+	function backdate(kvStore: Map<string, unknown>, draft: string) {
+		const key = `counter:${draft}`;
+		const record = kvStore.get(key) as { startedAt: string };
+		kvStore.set(key, { ...record, startedAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+	}
+
+	async function terminalSale(ctx: PluginContext) {
+		const res = await call(ctx, "admin/counter/sale", EDITOR_USER, {
+			input: {
+				lines: [{ productId: "prod_mug", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+			},
+		});
+		expect(res.status).toBe(200);
+		return String(res.body.orderDraftId);
+	}
+
+	it("a terminal tap after the time-out still becomes the order", async () => {
+		const { ctx, kvStore, getCol, products, setLive } = shop();
+		const draft = await terminalSale(ctx);
+		backdate(kvStore, draft);
+		expect((await status(ctx, draft, EDITOR_USER)).body).toMatchObject({
+			status: "failed",
+			failure: "timed_out",
+		});
+
+		// The customer taps their card at 5:30.
+		setLive({ status: "succeeded", amount: 80_000, currency: "KES" });
+		const late = await status(ctx, draft, EDITOR_USER);
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(late.body).toMatchObject({ status: "paid", orderNumber: order.orderNumber });
+		expect(order.channel).toBe("in_person");
+		expect(stock(products)).toBe(4);
+	});
+
+	it("Retry refuses to charge again when the earlier attempt was paid late", async () => {
+		const { ctx, kvStore, getCol, started, setLive } = shop();
+		const draft = await terminalSale(ctx);
+		backdate(kvStore, draft);
+		await status(ctx, draft, EDITOR_USER);
+		setLive({ status: "succeeded", amount: 80_000, currency: "KES" });
+
+		const retry = await call(ctx, "admin/counter/sale", EDITOR_USER, {
+			input: {
+				lines: [{ productId: "prod_mug", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+				retryOf: draft,
+			},
+		});
+		expect(retry.status).toBe(409);
+		expect(retry.body.sale).toMatchObject({ status: "paid" });
+		expect(started).toHaveLength(1);
+		expect(getCol("orders").size).toBe(1);
+	});
+
+	it("the webhook and the status check confirming at once create one order", async () => {
+		const { ctx, kvStore, getCol, products, setLive } = shop();
+		const sale = await startPhoneSale(ctx);
+		setLive({ status: "succeeded", amount: 160_000, currency: "KES" });
+
+		const [webhook] = await Promise.all([
+			deliverWebhook(
+				ctx,
+				JSON.stringify({
+					id: "evt_counter_race",
+					type: "charge.succeeded",
+					orderDraftId: sale.orderDraftId,
+					paymentReference: `mock_counter_${sale.orderDraftId}`,
+					amount: 160_000,
+					currency: "KES",
+					email: EDITOR_USER.email,
+				}),
+				{ "x-mock-signature": "test-secret" },
+			),
+			status(ctx, sale.orderDraftId, EDITOR_USER),
+		]);
+		expect(webhook.status).toBe(200);
+
+		const paid = await status(ctx, sale.orderDraftId, EDITOR_USER);
+		expect(paid.body.status).toBe("paid");
+		expect(getCol("orders").size).toBe(1);
+		// The loser stopped before any side effect.
+		const customers = Array.from(getCol("customers").values()) as Array<{ ordersCount: number }>;
+		expect(customers.map((c) => c.ordersCount)).toEqual([1]);
+		expect(kvStore.get("state:orderNumberCounter")).toBe(1001);
+		expect(stock(products)).toBe(3);
 	});
 });
 

@@ -858,6 +858,12 @@ function commerceCtx(opts?: { kv?: Record<string, unknown>; orders?: Map<string,
 			download_grants: {
 				query: async () => ({ items: [], cursor: null, hasMore: false }),
 			},
+			// Order creation claims the payment in the dedup log first.
+			stripe_events: {
+				put: async () => {},
+				delete: async () => {},
+				query: async () => ({ items: [], cursor: null, hasMore: false }),
+			},
 		},
 		log: { info() {}, warn() {}, error() {}, debug() {} },
 		site: { url: "https://shop.example", name: "Shop" },

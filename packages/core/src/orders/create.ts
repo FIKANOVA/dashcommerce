@@ -270,11 +270,77 @@ export interface CreateOrderInput {
 	soldBy?: string;
 }
 
+/**
+ * Another caller is creating the order for this payment right now (the
+ * webhook and the counter page's status check can confirm the same payment
+ * at once). Nothing has been written; treat it as a duplicate and look for
+ * the order again later.
+ */
+export class OrderCreationInProgress extends Error {
+	constructor(readonly paymentReference: string) {
+		super(`An order for payment ${paymentReference} is already being created`);
+		this.name = "OrderCreationInProgress";
+	}
+}
+
+export function isOrderCreationInProgress(err: unknown): err is OrderCreationInProgress {
+	return err instanceof Error && err.name === "OrderCreationInProgress";
+}
+
+type ClaimStore = StorageCollection<{
+	id: string;
+	stripeEventId: string;
+	type: string;
+	createdAt: string;
+}>;
+
+/** A claim older than this is from a caller that died mid-way; take it over. */
+const CLAIM_STALE_MS = 2 * 60 * 1000;
+
+/**
+ * Claim the right to create the order for one payment, before any side
+ * effect (customer, order number, stock, email). The claim is a row in the
+ * webhook dedup log, whose unique index makes the claim atomic. Returns the
+ * row id, or `null` when another caller holds a fresh claim.
+ */
+async function claimOrderCreation(
+	ctx: PluginContext,
+	paymentReference: string,
+): Promise<string | null> {
+	const store = (ctx.storage as unknown as { stripe_events: ClaimStore }).stripe_events;
+	const key = `order-create:${paymentReference}`;
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		const id = randomId();
+		try {
+			await store.put(id, { id, stripeEventId: key, type: "order-create", createdAt: new Date().toISOString() });
+			return id;
+		} catch (err) {
+			if (!isUniqueViolation(err)) throw err;
+		}
+		const held = (await store.query({ where: { stripeEventId: key }, limit: 1 })).items[0];
+		if (!held) continue;
+		if (Date.now() - Date.parse(held.data.createdAt) < CLAIM_STALE_MS) return null;
+		await store.delete(held.id);
+	}
+	return null;
+}
+
+async function releaseOrderClaim(ctx: PluginContext, claimId: string): Promise<void> {
+	try {
+		await (ctx.storage as unknown as { stripe_events: ClaimStore }).stripe_events.delete(claimId);
+	} catch (err) {
+		ctx.log.error("Could not release the order-creation claim", {
+			claimId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
 export async function createOrderFromPaymentIntent(
 	ctx: PluginContext,
 	input: CreateOrderInput,
 ): Promise<{ order: Order; duplicate: boolean }> {
-	const { paymentIntent: pi, cartSnapshot: cart, orderDraftId } = input;
+	const { paymentIntent: pi } = input;
 
 	// (1) Idempotency check.
 	const existing = await findOrderByPaymentIntent(ctx, pi.id);
@@ -289,6 +355,27 @@ export async function createOrderFromPaymentIntent(
 	if (pi.status !== "succeeded") {
 		throw new Error(`PaymentIntent ${pi.id} status is "${pi.status}"; expected "succeeded".`);
 	}
+
+	const claimId = await claimOrderCreation(ctx, pi.id);
+	if (!claimId) {
+		const created = await findOrderByPaymentIntent(ctx, pi.id);
+		if (created) return { order: created, duplicate: true };
+		throw new OrderCreationInProgress(pi.id);
+	}
+	try {
+		return await createClaimedOrder(ctx, input);
+	} catch (err) {
+		// Let a retry try again; the order was not created.
+		await releaseOrderClaim(ctx, claimId);
+		throw err;
+	}
+}
+
+async function createClaimedOrder(
+	ctx: PluginContext,
+	input: CreateOrderInput,
+): Promise<{ order: Order; duplicate: boolean }> {
+	const { paymentIntent: pi, cartSnapshot: cart, orderDraftId } = input;
 
 	const reconcile = reconcilePaymentAmount(
 		cart.total.amount,

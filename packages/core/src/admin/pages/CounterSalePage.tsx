@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Input, Loading, Select, Table, usePluginAPI } from "../kit";
+import { Alert, Button, Card, Input, Loading, Select, Table, confirm, usePluginAPI } from "../kit";
 import { format as formatMoney, type Money } from "../../money";
 import { T } from "../theme";
 
@@ -47,6 +47,26 @@ interface SaleState {
 	orderNumber?: string;
 }
 
+/** HTTP status of a failed admin API call, when it has one. */
+function errorStatus(err: unknown): number | undefined {
+	const status = (err as { status?: unknown } | null)?.status;
+	return typeof status === "number" ? status : undefined;
+}
+
+/** A 4xx other than 409/429 won't change by asking again. */
+function isPermanent(err: unknown): boolean {
+	const status = errorStatus(err);
+	return status !== undefined && status >= 400 && status < 500 && status !== 409 && status !== 429;
+}
+
+/**
+ * Keep checking while the customer may still pay: a pending sale, or a
+ * terminal sale that stopped waiting (a card can still be tapped late).
+ */
+function keepChecking(sale: SaleState): boolean {
+	return sale.status === "pending" || (sale.status === "failed" && sale.method === "terminal");
+}
+
 function errorText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
@@ -75,6 +95,8 @@ export function CounterSalePage() {
 	const [sale, setSale] = useState<SaleState | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 	const [saleError, setSaleError] = useState<string | null>(null);
+	/** A failed attempt the staff member went back to change; the next payment retries it. */
+	const [changedFrom, setChangedFrom] = useState<string | null>(null);
 	const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	useEffect(() => {
@@ -123,8 +145,12 @@ export function CounterSalePage() {
 				try {
 					const next = await api.get<SaleState>("admin/counter/status", { draft: orderDraftId });
 					setSale(next);
-					if (next.status === "pending") poll(orderDraftId);
-				} catch {
+					if (keepChecking(next)) poll(orderDraftId);
+				} catch (err) {
+					if (isPermanent(err)) {
+						setSaleError(`Stopped checking: ${errorText(err)}`);
+						return;
+					}
 					// A dropped connection at the counter: keep checking.
 					poll(orderDraftId);
 				}
@@ -155,25 +181,55 @@ export function CounterSalePage() {
 		setSaleError(null);
 		setSubmitting(true);
 		stopPolling();
+		// Retry names the earlier attempt, so the server can check it was not
+		// paid late before asking the customer again.
+		const retryOf = sale?.status === "failed" ? sale.orderDraftId : (changedFrom ?? undefined);
 		try {
 			const started = await api.post<SaleState>("admin/counter/sale", {
 				lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
 				method: method === "phone" ? { type: "phone", phone } : { type: "terminal", terminalId },
 				currency: setup?.currency,
 				...(email.trim() ? { customerEmail: email.trim() } : {}),
+				...(retryOf ? { retryOf } : {}),
 			});
 			setSale(started);
-			if (started.status === "pending") poll(started.orderDraftId);
+			setChangedFrom(null);
+			if (keepChecking(started)) poll(started.orderDraftId);
 		} catch (err) {
 			setSaleError(errorText(err));
+			if (retryOf && errorStatus(err) === 409) {
+				// The earlier attempt was paid late, or is still waiting: show it.
+				try {
+					const earlier = await api.get<SaleState>("admin/counter/status", { draft: retryOf });
+					setSale(earlier);
+					if (keepChecking(earlier)) poll(retryOf);
+				} catch {
+					// Keep the error shown above.
+				}
+			} else if (sale && keepChecking(sale)) {
+				poll(sale.orderDraftId);
+			}
 		} finally {
 			setSubmitting(false);
 		}
 	}
 
-	function newSale() {
+	async function newSale() {
+		if (sale && keepChecking(sale)) {
+			const leave = await confirm({
+				title: "Start a new sale?",
+				description:
+					sale.status === "pending"
+						? "This payment is still waiting for the customer. If they pay, the order is still created and appears in Orders, but this page stops showing it."
+						: "A card can still be tapped on the terminal for this sale. If it is, the order is still created and appears in Orders, but this page stops showing it.",
+				confirmLabel: "New sale",
+				cancelLabel: "Keep waiting",
+			});
+			if (!leave) return;
+		}
 		stopPolling();
 		setSale(null);
+		setChangedFrom(null);
 		setLines([]);
 		setPhone("");
 		setEmail("");
@@ -228,6 +284,9 @@ export function CounterSalePage() {
 				{sale.status === "failed" && (
 					<Alert type="error" title="Not paid">
 						{failureText(sale)} The stock is no longer held.
+						{sale.method === "terminal"
+							? " Still checking in case the card is tapped late; check the terminal before you retry."
+							: ""}
 					</Alert>
 				)}
 				<div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -237,7 +296,15 @@ export function CounterSalePage() {
 						</Button>
 					)}
 					{sale.status === "failed" && (
-						<Button onClick={() => setSale(null)}>Change the sale</Button>
+						<Button
+							onClick={() => {
+								stopPolling();
+								setChangedFrom(sale.orderDraftId);
+								setSale(null);
+							}}
+						>
+							Change the sale
+						</Button>
 					)}
 					{sale.status === "paid" && sale.orderId && (
 						<Button
