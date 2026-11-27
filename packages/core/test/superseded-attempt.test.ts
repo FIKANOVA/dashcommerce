@@ -6,7 +6,7 @@
  * paid is held for review instead of becoming a second normal order.
  */
 
-import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { RouteContext } from "emdash";
 import {
 	createMockPaymentProvider,
@@ -22,10 +22,7 @@ import {
 	ticketCart,
 } from "./helpers/route-harness";
 
-afterEach(() => {
-	resetPaymentProviders();
-	setSystemTime();
-});
+afterEach(() => resetPaymentProviders());
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), {
@@ -158,7 +155,6 @@ describe("checkout/create-intent with an earlier attempt", () => {
 function hostedStripeShop(earlier: { expirable: true } | { expirable: false; status: string }) {
 	let created = 0;
 	const expired: string[] = [];
-	const bodies: URLSearchParams[] = [];
 	const { ctx, kvStore } = makeRouteContext(
 		{
 			"settings:paymentProvider": "stripe",
@@ -189,7 +185,6 @@ function hostedStripeShop(earlier: { expirable: true } | { expirable: false; sta
 			}
 			if (url.endsWith("/v1/checkout/sessions") && init?.method === "POST") {
 				created += 1;
-				bodies.push(new URLSearchParams(String(init.body ?? "")));
 				return json({
 					id: `cs_${created}`,
 					object: "checkout.session",
@@ -222,7 +217,7 @@ function hostedStripeShop(earlier: { expirable: true } | { expirable: false; sta
 		return draft ? (kvStore.get(`lock:${draft}`) as StockLock | undefined) : undefined;
 	};
 
-	return { pay, hold, expired, bodies, created: () => created };
+	return { pay, hold, expired, created: () => created };
 }
 
 describe("checkout/create-session (hosted Stripe) with an earlier attempt", () => {
@@ -242,29 +237,6 @@ describe("checkout/create-session (hosted Stripe) with an earlier attempt", () =
 		expect(second.body.sessionId).toBe("cs_2");
 		expect(shop.expired).toEqual(["cs_1"]);
 		expect(shop.hold("sess_h")?.stripeCheckoutSessionId).toBe("cs_2");
-	});
-
-	it("asks Stripe to expire the session when the hold ends", async () => {
-		const start = new Date("2026-11-27T10:00:00Z");
-		setSystemTime(start);
-		const shop = hostedStripeShop({ expirable: true });
-		expect((await shop.pay("sess_h")).status).toBe(200);
-		const expiresAt = Number(shop.bodies[0]?.get("expires_at"));
-		expect(expiresAt).toBe(start.getTime() / 1000 + 31 * 60);
-		expect(Date.parse(shop.hold("sess_h")?.expiresAt ?? "")).toBe(expiresAt * 1000);
-	});
-
-	it("still expires the earlier session on a retry after 15 minutes", async () => {
-		const start = new Date("2026-11-27T10:00:00Z");
-		setSystemTime(start);
-		const shop = hostedStripeShop({ expirable: true });
-		expect((await shop.pay("sess_h")).status).toBe(200);
-
-		// The shopper comes back 20 minutes later; Stripe's page still takes payment.
-		setSystemTime(new Date(start.getTime() + 20 * 60 * 1000));
-		const second = await shop.pay("sess_h");
-		expect(second.status).toBe(200);
-		expect(shop.expired).toEqual(["cs_1"]);
 	});
 
 	it("refuses the new attempt when the earlier session is already complete", async () => {

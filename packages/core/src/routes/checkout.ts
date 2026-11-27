@@ -67,14 +67,6 @@ import { resolveSessionId } from "./cart";
 const DRAFT_PREFIX = "draft:";
 const DRAFT_TTL_MS = 15 * 60 * 1000;
 const LOCK_TTL_MS = 15 * 60 * 1000;
-/**
- * A hosted Stripe Checkout Session can be paid until it expires (24 hours
- * by default). Its attempt is held for as long as it can be paid, and it is
- * told to expire then: 31 minutes, just over Stripe's 30-minute minimum. So
- * while the session can still be paid, the shopper's hold names it and a
- * new attempt can expire it; once the hold is gone, so is the session.
- */
-const STRIPE_HOSTED_TTL_MS = 31 * 60 * 1000;
 
 export async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 	const mode = (await ctx.kv.get<string>("settings:taxMode")) ?? "flat";
@@ -707,15 +699,12 @@ export const checkoutRoutes = {
 			}
 
 			const orderDraftId = randomId();
-			const stripeHosted = provider.id === "stripe";
-			const holdMs = stripeHosted ? STRIPE_HOSTED_TTL_MS : LOCK_TTL_MS;
-			const sessionExpiresAt = Math.floor((Date.now() + holdMs) / 1000);
 
-			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: holdMs });
+			await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: LOCK_TTL_MS });
 
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
 				cart: recalculated,
-				ttlMs: Math.max(DRAFT_TTL_MS, holdMs),
+				ttlMs: DRAFT_TTL_MS,
 				createdAt: new Date().toISOString(),
 			});
 
@@ -988,7 +977,6 @@ export const checkoutRoutes = {
 				billingAddressCollection: "auto",
 				allowPromotionCodes: false,
 				clientReferenceId: orderDraftId,
-				...(stripeHosted ? { expiresAt: sessionExpiresAt } : {}),
 				metadata,
 				...(allocations ? { allocations } : {}),
 				...(platformRemainderMinor !== undefined ? { platformRemainderMinor } : {}),
@@ -1094,7 +1082,7 @@ export const checkoutRoutes = {
 
 			await ctx.kv.set(`${DRAFT_PREFIX}${orderDraftId}`, {
 				cart: recalculated,
-				ttlMs: Math.max(DRAFT_TTL_MS, holdMs),
+				ttlMs: DRAFT_TTL_MS,
 				createdAt: new Date().toISOString(),
 				providerId: provider.id,
 				checkoutReference: checkoutResult.checkoutReference,
