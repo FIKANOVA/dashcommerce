@@ -770,6 +770,8 @@ export interface StockLock {
 	orderDraftId: string;
 	sessionId: string;
 	stripePaymentIntentId?: string;
+	/** The hosted Stripe Checkout Session of this attempt, so a new attempt can expire it. */
+	stripeCheckoutSessionId?: string;
 	entries: StockLockEntry[];
 	expiresAt: IsoDateTime;
 	createdAt: IsoDateTime;

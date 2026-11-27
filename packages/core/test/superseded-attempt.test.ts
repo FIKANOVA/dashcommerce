@@ -147,6 +147,112 @@ describe("checkout/create-intent with an earlier attempt", () => {
 	});
 });
 
+/**
+ * A shop on hosted Stripe Checkout. `earlier` says how Stripe answers for
+ * an earlier session: expirable, or not (expire refused and the session is
+ * in `status`).
+ */
+function hostedStripeShop(earlier: { expirable: true } | { expirable: false; status: string }) {
+	let created = 0;
+	const expired: string[] = [];
+	const { ctx, kvStore } = makeRouteContext(
+		{
+			"settings:paymentProvider": "stripe",
+			"settings:checkoutMode": "hosted",
+			"settings:stripeSecretKey": "sk_test_x",
+		},
+		async (url, init) => {
+			const expire = url.match(/\/v1\/checkout\/sessions\/([^/]+)\/expire$/);
+			if (expire?.[1] && init?.method === "POST") {
+				if (!earlier.expirable) {
+					return json(
+						{
+							error: {
+								code: "checkout_session_unexpected_state",
+								message: `This Checkout Session has a status of ${earlier.status} and can't be expired.`,
+							},
+						},
+						400,
+					);
+				}
+				expired.push(expire[1]);
+				return json({ id: expire[1], object: "checkout.session", status: "expired" });
+			}
+			const retrieve = url.match(/\/v1\/checkout\/sessions\/([^/]+)$/);
+			if (retrieve?.[1] && init?.method === "GET") {
+				const status = earlier.expirable ? "expired" : earlier.status;
+				return json({ id: retrieve[1], object: "checkout.session", status });
+			}
+			if (url.endsWith("/v1/checkout/sessions") && init?.method === "POST") {
+				created += 1;
+				return json({
+					id: `cs_${created}`,
+					object: "checkout.session",
+					mode: "payment",
+					status: "open",
+					url: `https://checkout.stripe.com/c/pay/cs_${created}`,
+				});
+			}
+			throw new Error(`Unexpected request: ${init?.method} ${url}`);
+		},
+	);
+
+	async function pay(sessionId: string) {
+		// The shopper comes back from Stripe's page to the same cart.
+		await ctx.kv.set(`cart:${sessionId}`, ticketCart(sessionId));
+		const routeCtx = {
+			...ctx,
+			request: new Request("http://test/checkout/create-session", {
+				method: "POST",
+				headers: { Cookie: `dashcommerce_sid=${sessionId}` },
+			}),
+			input: {},
+		} as unknown as RouteContext;
+		const res = (await sandbox.routes["checkout/create-session"].handler(routeCtx, ctx)) as Response;
+		return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+	}
+
+	const hold = (sessionId: string) => {
+		const draft = kvStore.get(`hold:${sessionId}`) as string | undefined;
+		return draft ? (kvStore.get(`lock:${draft}`) as StockLock | undefined) : undefined;
+	};
+
+	return { pay, hold, expired, created: () => created };
+}
+
+describe("checkout/create-session (hosted Stripe) with an earlier attempt", () => {
+	it("records the Checkout Session on the hold", async () => {
+		const shop = hostedStripeShop({ expirable: true });
+		expect((await shop.pay("sess_h")).status).toBe(200);
+		expect(shop.expired).toEqual([]);
+		expect(shop.hold("sess_h")?.stripeCheckoutSessionId).toBe("cs_1");
+	});
+
+	it("expires the earlier attempt's Checkout Session before starting a new one", async () => {
+		const shop = hostedStripeShop({ expirable: true });
+		expect((await shop.pay("sess_h")).status).toBe(200);
+
+		const second = await shop.pay("sess_h");
+		expect(second.status).toBe(200);
+		expect(second.body.sessionId).toBe("cs_2");
+		expect(shop.expired).toEqual(["cs_1"]);
+		expect(shop.hold("sess_h")?.stripeCheckoutSessionId).toBe("cs_2");
+	});
+
+	it("refuses the new attempt when the earlier session is already complete", async () => {
+		const shop = hostedStripeShop({ expirable: false, status: "complete" });
+		const first = await shop.pay("sess_h");
+		expect(first.status).toBe(200);
+
+		const second = await shop.pay("sess_h");
+		expect(second.status).toBe(409);
+		expect(second.body.code).toBe("earlier_payment_processing");
+		// No second session, and the earlier attempt keeps its hold.
+		expect(shop.created()).toBe(1);
+		expect(shop.hold("sess_h")?.orderDraftId).toBe(first.body.orderDraftId as string);
+	});
+});
+
 const mockSettings = {
 	"settings:paymentProvider": "mock",
 	"settings:checkoutMode": "hosted",

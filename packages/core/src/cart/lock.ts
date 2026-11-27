@@ -165,6 +165,16 @@ export async function recordHoldPaymentIntent(
 	if (lock) await createLock(ctx, { ...lock, stripePaymentIntentId: paymentIntentId });
 }
 
+/** Record the hosted Stripe Checkout Session created for a held attempt. */
+export async function recordHoldCheckoutSession(
+	ctx: PluginContext,
+	orderDraftId: string,
+	checkoutSessionId: string,
+): Promise<void> {
+	const lock = await getLock(ctx, orderDraftId);
+	if (lock) await createLock(ctx, { ...lock, stripeCheckoutSessionId: checkoutSessionId });
+}
+
 /** Attempts that replaced one another share a group, named by the first. */
 function attemptKey(orderDraftId: string): string {
 	return `attempt:${orderDraftId}`;

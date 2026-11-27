@@ -284,6 +284,27 @@ export async function retrieveCheckoutSession(
 	});
 }
 
+/**
+ * Expire an open Checkout Session so it can no longer be paid. Stripe
+ * refuses once the session is complete (paid, or an async payment still
+ * settling) or already expired.
+ *
+ * No idempotency key, as with `cancelPaymentIntent`: a first, transient
+ * failure would be replayed for 24 hours. Expiring twice is harmless, and
+ * the caller re-reads the session when this fails.
+ */
+export async function expireCheckoutSession(
+	ctx: PluginContext,
+	id: string,
+	client: StripeClientOptions,
+): Promise<StripeCheckoutSession> {
+	return call<StripeCheckoutSession>(ctx, {
+		method: "POST",
+		path: `/checkout/sessions/${encodeURIComponent(id)}/expire`,
+		client,
+	});
+}
+
 // =============================================================================
 // Billing Portal (customer self-service for subscriptions + payment methods)
 // =============================================================================

@@ -20,6 +20,7 @@ import { type PricingPolicy, recalculate } from "../cart/calculate";
 import {
 	currentHold,
 	holdStock,
+	recordHoldCheckoutSession,
 	recordHoldPaymentIntent,
 	sumActiveLocksForProduct,
 } from "../cart/lock";
@@ -46,6 +47,8 @@ import {
 	type CheckoutLineItem,
 	type CheckoutShippingOption,
 	createOneTimeCoupon,
+	expireCheckoutSession,
+	retrieveCheckoutSession,
 } from "../stripe/checkout-sessions";
 import type { StripeClientOptions } from "../stripe/client";
 import {
@@ -104,6 +107,46 @@ async function cancelEarlierIntent(
 		});
 		return false;
 	}
+}
+
+/**
+ * Expire the hosted Checkout Session of a shopper's replaced attempt.
+ * Returns false when it can't be expired (it is complete: paid, or an
+ * async payment is still settling), so the new attempt must wait.
+ */
+async function expireEarlierSession(
+	ctx: PluginContext,
+	checkoutSessionId: string,
+	client: StripeClientOptions,
+): Promise<boolean> {
+	try {
+		await expireCheckoutSession(ctx, checkoutSessionId, client);
+		return true;
+	} catch (err) {
+		try {
+			const session = await retrieveCheckoutSession(ctx, checkoutSessionId, client);
+			if (session.status === "expired") return true;
+		} catch {
+			// Fall through: without a known state, refuse rather than risk a second charge.
+		}
+		ctx.log.warn("Could not expire the shopper's earlier Checkout Session", {
+			checkoutSessionId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
+}
+
+/** The 409 for a new attempt while the shopper's earlier payment may still land. */
+function earlierPaymentProcessing(): Response {
+	return new Response(
+		JSON.stringify({
+			error:
+				"Your earlier payment is still being processed. Wait a moment, then check your email or try again.",
+			code: "earlier_payment_processing",
+		}),
+		{ status: 409, headers: { "Content-Type": "application/json" } },
+	);
 }
 
 async function loadStripeClient(ctx: PluginContext): Promise<StripeClientOptions | null> {
@@ -384,14 +427,7 @@ export const checkoutRoutes = {
 				earlier?.stripePaymentIntentId &&
 				!(await cancelEarlierIntent(ctx, earlier.stripePaymentIntentId, client))
 			) {
-				return new Response(
-					JSON.stringify({
-						error:
-							"Your earlier payment is still being processed. Wait a moment, then check your email or try again.",
-						code: "earlier_payment_processing",
-					}),
-					{ status: 409, headers: { "Content-Type": "application/json" } },
-				);
+				return earlierPaymentProcessing();
 			}
 
 			const orderDraftId = randomId();
@@ -648,6 +684,19 @@ export const checkoutRoutes = {
 				}
 			}
 			await save(ctx, recalculated);
+
+			// A new attempt replaces the shopper's earlier one. If that one
+			// still has an open Stripe Checkout Session (the shopper went back
+			// from Stripe's page), expire it so both can't be paid.
+			if (provider.id === "stripe") {
+				const earlier = await currentHold(ctx, sessionId);
+				if (
+					earlier?.stripeCheckoutSessionId &&
+					!(await expireEarlierSession(ctx, earlier.stripeCheckoutSessionId, client))
+				) {
+					return earlierPaymentProcessing();
+				}
+			}
 
 			const orderDraftId = randomId();
 
@@ -1038,6 +1087,9 @@ export const checkoutRoutes = {
 				providerId: provider.id,
 				checkoutReference: checkoutResult.checkoutReference,
 			});
+			if (provider.id === "stripe" && checkoutResult.checkoutReference) {
+				await recordHoldCheckoutSession(ctx, orderDraftId, checkoutResult.checkoutReference);
+			}
 
 			return new Response(
 				JSON.stringify({
