@@ -8,6 +8,7 @@
 
 import { REGION_TABLE, regionCode } from "../data/regions";
 import { add, money, zero, type Money } from "../money";
+import { postcodeMatches } from "./postcodes";
 import type {
 	Address,
 	CartLineItem,
@@ -19,14 +20,20 @@ import type {
 
 /**
  * How closely a zone matches the address: 0 not at all, 1 on the whole
- * country, 2 on one of the country's regions.
+ * country, 2 on one of the country's regions, 3 on its postcode. A location
+ * that lists postcodes matches only an address whose postcode is one of
+ * them (and, when it lists regions too, whose region is one of those).
  */
-function matchLevel(address: Address, zone: ShippingZone): 0 | 1 | 2 {
-	let level: 0 | 1 = 0;
+function matchLevel(address: Address, zone: ShippingZone): 0 | 1 | 2 | 3 {
+	let level: 0 | 1 | 2 | 3 = 0;
 	for (const loc of zone.locations) {
 		if (loc.country !== address.country) continue;
-		if (!loc.regions || loc.regions.length === 0) level = 1;
-		else if (loc.regions.includes(address.region)) return 2;
+		const regions = loc.regions ?? [];
+		const postcodes = loc.postcodes ?? [];
+		if (regions.length > 0 && !regions.includes(address.region)) continue;
+		if (postcodes.length > 0 && !postcodeMatches(address.postalCode, postcodes)) continue;
+		const here = postcodes.length > 0 ? 3 : regions.length > 0 ? 2 : 1;
+		if (here > level) level = here;
 	}
 	return level;
 }
@@ -37,9 +44,10 @@ export function matchesZone(address: Address, zone: ShippingZone): boolean {
 
 /**
  * The first matching zone by `order`. Among matching zones with the same
- * order, one that names the address's region wins over one that covers
- * the whole country, so a "Nairobi" zone works next to a "Kenya" zone
- * even when both are left on the default order.
+ * order, one that names the address's postcode wins over one that names
+ * its region, which wins over one that covers the whole country, so a
+ * "Nairobi" zone works next to a "Kenya" zone even when both are left on
+ * the default order.
  */
 export function pickZone(
 	address: Address,
@@ -74,6 +82,20 @@ export function zoneRegions(zones: ShippingZone[]): Record<string, string[]> {
 		}
 	}
 	return out;
+}
+
+/**
+ * The countries where a zone lists postcodes. Checkout asks for the
+ * postcode before quoting only in these countries.
+ */
+export function zonePostcodeCountries(zones: ShippingZone[]): string[] {
+	const out = new Set<string>();
+	for (const zone of zones) {
+		for (const loc of zone.locations ?? []) {
+			if (loc.postcodes && loc.postcodes.length > 0) out.add(loc.country);
+		}
+	}
+	return [...out].sort();
 }
 
 /**

@@ -25,6 +25,7 @@ import type {
 	ShippingMethod,
 	ShippingMethodConfig,
 	ShippingZone,
+	ShippingZoneLocation,
 	Subscription,
 	TaxRate,
 	Vendor,
@@ -34,6 +35,7 @@ import type {
 import { refundOrder } from "../orders/refund";
 import { sendReviewRequest } from "../emails";
 import { normalizeProductFields } from "../products/normalize";
+import { parsePostcodeEntry, POSTCODE_MAX_ENTRIES } from "../shipping/postcodes";
 import { recomputeSummary } from "../reviews/moderate";
 import { moderateReview } from "../reviews/moderate";
 import { cancel, pause, resume } from "../subscriptions/lifecycle";
@@ -817,6 +819,33 @@ async function deleteTaxRate(ctx: PluginContext, id: string): Promise<Response> 
 // Shipping CRUD
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A location's postcode entries, normalised (see `shipping/postcodes`), or
+ * the first entry that is not a postcode, prefix or range.
+ */
+function validateZonePostcodes(
+	country: string,
+	input: unknown,
+): { ok: true; value: string[] } | { ok: false; error: string } {
+	if (!Array.isArray(input) || input.some((p) => typeof p !== "string")) {
+		return { ok: false, error: "postcodes must be an array of strings" };
+	}
+	const entries = (input as string[]).filter((p) => p.trim() !== "");
+	if (entries.length > POSTCODE_MAX_ENTRIES) {
+		return {
+			ok: false,
+			error: `${country}: list at most ${POSTCODE_MAX_ENTRIES} postcodes per country`,
+		};
+	}
+	const out: string[] = [];
+	for (const raw of entries) {
+		const parsed = parsePostcodeEntry(raw);
+		if (!parsed.ok) return { ok: false, error: `${country}: ${parsed.error}` };
+		if (!out.includes(parsed.value)) out.push(parsed.value);
+	}
+	return { ok: true, value: out };
+}
+
 function validateShippingZone(
 	input: Record<string, unknown>,
 	partial = false,
@@ -832,7 +861,7 @@ function validateShippingZone(
 		if (!Array.isArray(input.locations)) {
 			return { ok: false, error: "locations must be an array" };
 		}
-		const locations: Array<{ country: string; regions?: string[] }> = [];
+		const locations: ShippingZoneLocation[] = [];
 		for (const loc of input.locations) {
 			if (
 				!loc ||
@@ -841,13 +870,14 @@ function validateShippingZone(
 			) {
 				return { ok: false, error: "each location needs a country code" };
 			}
-			const l = loc as { country: string; regions?: unknown };
+			const l = loc as { country: string; regions?: unknown; postcodes?: unknown };
 			if (!/^[A-Z]{2}$/.test(l.country)) {
 				return {
 					ok: false,
 					error: `country must be a 2-letter ISO-3166 code (got '${l.country}')`,
 				};
 			}
+			const location: ShippingZoneLocation = { country: l.country };
 			if (l.regions !== undefined) {
 				if (
 					!Array.isArray(l.regions) ||
@@ -858,12 +888,14 @@ function validateShippingZone(
 				const regions = [
 					...new Set((l.regions as string[]).map((r) => r.trim()).filter(Boolean)),
 				];
-				locations.push(
-					regions.length > 0 ? { country: l.country, regions } : { country: l.country },
-				);
-			} else {
-				locations.push({ country: l.country });
+				if (regions.length > 0) location.regions = regions;
 			}
+			if (l.postcodes !== undefined) {
+				const postcodes = validateZonePostcodes(l.country, l.postcodes);
+				if (!postcodes.ok) return postcodes;
+				if (postcodes.value.length > 0) location.postcodes = postcodes.value;
+			}
+			locations.push(location);
 		}
 		out.locations = locations;
 	}

@@ -56,9 +56,12 @@ function normaliseRegion(country: string, value: string | undefined): string {
 	return regionCode(country, value ?? "").toLowerCase();
 }
 
-/** Postcodes compare without case or spaces: "sw1a 1aa" matches a "SW1A" rate. */
-function normalisePostalCode(value: string | undefined): string {
-	return (value ?? "").replace(/\s+/g, "").toUpperCase();
+/**
+ * Postcodes compare without case or spaces: "sw1a 1aa" matches a "SW1A" rate.
+ * Shipping zones compare postcodes the same way (see `shipping/postcodes`).
+ */
+export function normalisePostalCode(value: string | undefined): string {
+	return (typeof value === "string" ? value : "").replace(/\s+/g, "").toUpperCase();
 }
 
 /**
