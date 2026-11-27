@@ -287,6 +287,28 @@ describe("dispute.updated follow-ups", () => {
 		expect(orderRow(getCol, order.id).refundedTotal.amount).toBe(0);
 	});
 
+	it("finishes a lost-then-won reversal on retry without subtracting twice", async () => {
+		const { ctx, getCol, order, reference } = await paidOrder();
+		await deliverWebhook(ctx, dispute(reference, "evt_d1", "lost"), headers);
+		// As if the first "won" delivery lowered the order's totals (leaving
+		// another KES 200 refund counted) and then failed before marking the
+		// dispute refund row: the row still reads succeeded, the dispute lost.
+		const lost = orderRow(getCol, order.id);
+		getCol("orders").set(order.id, {
+			...lost,
+			refundedTotal: { currency: "KES", amount: 20000 },
+			paymentStatus: "partially_refunded",
+			metadata: { ...lost.metadata, reversedDisputeRefunds: ["dispute:acme:dp_1"] },
+		});
+
+		await deliverWebhook(ctx, dispute(reference, "evt_d2", "won"), headers);
+		const after = orderRow(getCol, order.id);
+		expect(after.disputes?.[0]?.status).toBe("won");
+		expect(after.refundedTotal.amount).toBe(20000);
+		const refunds = Array.from(getCol("refunds").values()) as unknown as Refund[];
+		expect(refunds[0]?.status).toBe("failed");
+	});
+
 	it("logs that vendor shares were not taken back when a split payment's dispute is lost", async () => {
 		const { ctx, getCol, logs, order, reference } = await paidOrder();
 		getCol("orders").set(order.id, {

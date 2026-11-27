@@ -119,7 +119,9 @@ export function hasVendorShares(order: Order): boolean {
 /**
  * A lost dispute turned won: stop counting it as a refund, then record the
  * new status. In that order, so a failure in between leaves the dispute
- * lost and the provider's retry finishes the reversal.
+ * lost and the provider's retry finishes the reversal; `reverseLostDispute`
+ * marks the order in the same write as its totals, so the retry doesn't
+ * subtract twice.
  */
 async function applyLostThenWon(
 	ctx: PluginContext,

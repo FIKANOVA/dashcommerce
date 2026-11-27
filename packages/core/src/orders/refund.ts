@@ -362,14 +362,31 @@ export async function reverseLostDispute(
 		.items[0];
 	if (!row) return false;
 	const refund = { ...(row.data as Refund), id: row.id };
-	if (refund.status !== "succeeded") return false;
-	await refundsStore(ctx).put(refund.id, {
-		...refund,
-		status: "failed",
-		reason: "Dispute lost, then won: no longer counted",
-	});
-	await reverseFailedRefund(ctx, order, refund);
+	// The order records which dispute refunds it has stopped counting, in the
+	// same write as its new totals. A retry after a failure between the two
+	// writes below then neither skips nor repeats the subtraction.
+	const reversed = reversedDisputeKeys(order);
+	if (!reversed.includes(key)) {
+		if (refund.status !== "succeeded") return false;
+		await reverseFailedRefund(
+			ctx,
+			{ ...order, metadata: { ...order.metadata, reversedDisputeRefunds: [...reversed, key] } },
+			refund,
+		);
+	}
+	if (refund.status === "succeeded") {
+		await refundsStore(ctx).put(refund.id, {
+			...refund,
+			status: "failed",
+			reason: "Dispute lost, then won: no longer counted",
+		});
+	}
 	return true;
+}
+
+function reversedDisputeKeys(order: Order): string[] {
+	const keys = order.metadata?.reversedDisputeRefunds;
+	return Array.isArray(keys) ? keys.filter((k): k is string => typeof k === "string") : [];
 }
 
 export type ProviderRefundUpdateOutcome ="updated" | "unchanged" | "unknown" | "other-provider";
