@@ -115,6 +115,8 @@ interface SettingsShape {
 	_secrets: Record<string, SecretMeta>;
 	/** Registered providers, Stripe first. Absent from older servers. */
 	_providers?: ProviderRow[];
+	/** False for non-admins. Absent from older servers: treat as allowed. */
+	_canManagePayments?: boolean;
 }
 
 interface SecretMeta {
@@ -381,6 +383,11 @@ export function SettingsPage() {
 							{group.description}
 						</p>
 					)}
+					{isPaymentGroup(group.id) && saved._canManagePayments === false && (
+						<Alert type="info" title="Admins only">
+							Only an admin can change payment settings.
+						</Alert>
+					)}
 					<GroupBody
 						group={group.id}
 						saved={saved}
@@ -390,7 +397,9 @@ export function SettingsPage() {
 						connectEnabled={connectEnabled}
 						stripeActive={stripeActive}
 						setField={setField}
-						disabled={saving}
+						disabled={
+							saving || (isPaymentGroup(group.id) && saved._canManagePayments === false)
+						}
 					/>
 				</Card>
 			))}
@@ -404,6 +413,11 @@ export function SettingsPage() {
 			/>
 		</div>
 	);
+}
+
+/** Cards holding the payment provider choice and keys: admin-only. */
+function isPaymentGroup(group: Group): boolean {
+	return group === "provider" || group === "stripe";
 }
 
 interface GroupBodyProps {
