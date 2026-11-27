@@ -950,8 +950,8 @@ async function startPhonePayment(
 
 /**
  * A payment request (invoice) pushed to the terminal. Paystack's
- * `paymentrequest.success` webhook is not mapped, so the counter page's
- * status check confirms it through /paymentrequest/verify.
+ * `paymentrequest.success` webhook, or the counter page's status check
+ * through /paymentrequest/verify, confirms it, whichever comes first.
  */
 async function startTerminalPayment(
 	ctx: PaymentProviderRuntimeContext,
@@ -975,6 +975,8 @@ async function startTerminalPayment(
 			currency,
 			description: `Counter sale, order draft ${input.orderDraftId}`,
 			send_notification: false,
+			// Paystack takes payment request metadata as a JSON string.
+			metadata: JSON.stringify({ orderDraftId: input.orderDraftId, channel: "in_person" }),
 		},
 	});
 	if (!request.request_code || !request.offline_reference) {
@@ -990,6 +992,54 @@ async function startTerminalPayment(
 		},
 	});
 	return { paymentReference: request.request_code, status: "pending" };
+}
+
+/**
+ * `paymentrequest.success`: a counter sale paid on a terminal. Paystack's
+ * docs say only that it "contains the invoice details", the same object the
+ * Payment Request API returns, so every field is read defensively: the draft
+ * from `metadata.orderDraftId` (sent as a JSON string, read either way), or
+ * from the description this package writes; the amount as a number or a
+ * numeric string. Core confirms it through /paymentrequest/verify before
+ * creating the order, so the amount and currency come from Paystack's record.
+ */
+function paymentRequestSuccessEvent(data: unknown, raw: unknown): NormalizedPaymentEvent {
+	const unhandled: NormalizedPaymentEvent = {
+		type: "unhandled",
+		providerEventType: "paymentrequest.success",
+		raw,
+	};
+	if (!data || typeof data !== "object") return unhandled;
+	const d = data as Record<string, unknown>;
+	const code = typeof d.request_code === "string" ? d.request_code.trim() : "";
+	if (!code.startsWith(PAYMENT_REQUEST_PREFIX)) return unhandled;
+	const metaDraft = metadataOf(d.metadata)?.orderDraftId;
+	const described =
+		typeof d.description === "string" ? /order draft ([0-9a-f]{32})\b/.exec(d.description)?.[1] : undefined;
+	const orderDraftId =
+		typeof metaDraft === "string" && /^[0-9a-f]{32}$/.test(metaDraft) ? metaDraft : described;
+	const amount =
+		typeof d.amount === "number"
+			? d.amount
+			: typeof d.amount === "string" && /^\d+$/.test(d.amount)
+				? Number(d.amount)
+				: undefined;
+	const currency = typeof d.currency === "string" ? d.currency.trim().toUpperCase() : "";
+	if (!orderDraftId || amount === undefined || !currency) return unhandled;
+	const customer = d.customer && typeof d.customer === "object" ? (d.customer as Record<string, unknown>) : {};
+	return {
+		type: "charge.succeeded",
+		orderDraftId,
+		providerId: "paystack",
+		providerEventId: `paymentrequest.success:${code}`,
+		checkoutReference: code,
+		paymentReference: code,
+		amount,
+		currency,
+		customer: { email: typeof customer.email === "string" ? customer.email : "" },
+		channel: "Terminal",
+		raw,
+	};
 }
 
 async function paymentRequestStatus(
@@ -1189,6 +1239,10 @@ export const paystackPaymentProvider: PaymentProvider = {
 				event.data as unknown as PaystackSubscriptionWebhookData,
 				event,
 			);
+		}
+
+		if (event.event === "paymentrequest.success") {
+			return paymentRequestSuccessEvent(event.data, event);
 		}
 
 		// Paystack documents `charge.success` for completed payments. It has no
