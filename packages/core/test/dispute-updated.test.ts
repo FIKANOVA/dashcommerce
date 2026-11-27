@@ -242,6 +242,140 @@ describe("dispute.updated", () => {
 	});
 });
 
+describe("dispute.updated follow-ups", () => {
+	it("records the provider's label on the dispute for the admin", async () => {
+		const { ctx, getCol, order, reference } = await paidOrder();
+		await deliverWebhook(ctx, dispute(reference, "evt_d1", "open"), headers);
+		expect(orderRow(getCol, order.id).disputes?.[0]?.providerLabel).toBe("Acme Pay");
+	});
+
+	it("emails the admins about a dispute first seen already lost or won", async () => {
+		const lostCase = await paidOrder();
+		await deliverWebhook(lostCase.ctx, dispute(lostCase.reference, "evt_l", "lost"), headers);
+		expect(lostCase.sent).toHaveLength(1);
+		expect(lostCase.sent[0]?.subject).toBe(`Dispute lost on order ${lostCase.order.orderNumber}`);
+		expect(lostCase.sent[0]?.text).toContain("counted it as a refund");
+		expect(lostCase.sent[0]?.text).not.toContain("Don't ship");
+
+		resetPaymentProviders();
+		const wonCase = await paidOrder();
+		await deliverWebhook(wonCase.ctx, dispute(wonCase.reference, "evt_w", "won"), headers);
+		expect(wonCase.sent).toHaveLength(1);
+		expect(wonCase.sent[0]?.subject).toBe(`Dispute won on order ${wonCase.order.orderNumber}`);
+		expect(wonCase.sent[0]?.text).toContain("you keep the money");
+	});
+
+	it("stops counting a lost dispute that later turns won", async () => {
+		const { ctx, getCol, order, reference } = await paidOrder();
+		await deliverWebhook(ctx, dispute(reference, "evt_d1", "open"), headers);
+		await deliverWebhook(ctx, dispute(reference, "evt_d2", "lost"), headers);
+		expect(orderRow(getCol, order.id).paymentStatus).toBe("refunded");
+
+		const res = await deliverWebhook(ctx, dispute(reference, "evt_d3", "won"), headers);
+		expect(((await res.json()) as { dispute?: string }).dispute).toBe("updated");
+		const after = orderRow(getCol, order.id);
+		expect(after.disputes?.[0]?.status).toBe("won");
+		expect(after.refundedTotal.amount).toBe(0);
+		expect(after.paymentStatus).toBe("paid");
+		expect(after.status).toBe(order.status);
+		const refunds = Array.from(getCol("refunds").values()) as unknown as Refund[];
+		expect(refunds).toHaveLength(1);
+		expect(refunds[0]?.status).toBe("failed");
+
+		// A late redelivery of the loss does not count it again.
+		await deliverWebhook(ctx, dispute(reference, "evt_d4", "lost"), headers);
+		expect(orderRow(getCol, order.id).refundedTotal.amount).toBe(0);
+	});
+
+	it("finishes a lost-then-won reversal on retry without subtracting twice", async () => {
+		const { ctx, getCol, order, reference } = await paidOrder();
+		await deliverWebhook(ctx, dispute(reference, "evt_d1", "lost"), headers);
+		// As if the first "won" delivery lowered the order's totals (leaving
+		// another KES 200 refund counted) and then failed before marking the
+		// dispute refund row: the row still reads succeeded, the dispute lost.
+		const lost = orderRow(getCol, order.id);
+		getCol("orders").set(order.id, {
+			...lost,
+			refundedTotal: { currency: "KES", amount: 20000 },
+			paymentStatus: "partially_refunded",
+			metadata: { ...lost.metadata, reversedDisputeRefunds: ["dispute:acme:dp_1"] },
+		});
+
+		await deliverWebhook(ctx, dispute(reference, "evt_d2", "won"), headers);
+		const after = orderRow(getCol, order.id);
+		expect(after.disputes?.[0]?.status).toBe("won");
+		expect(after.refundedTotal.amount).toBe(20000);
+		const refunds = Array.from(getCol("refunds").values()) as unknown as Refund[];
+		expect(refunds[0]?.status).toBe("failed");
+	});
+
+	it("logs that vendor shares were not taken back when a split payment's dispute is lost", async () => {
+		const { ctx, getCol, logs, order, reference } = await paidOrder();
+		getCol("orders").set(order.id, {
+			...orderRow(getCol, order.id),
+			providerSplits: {
+				providerId: "acme",
+				allocations: [
+					{
+						vendorId: "v1",
+						accountReference: "ACCT_1",
+						amount: { currency: "KES", amount: 100000 },
+					},
+				],
+				capturedAt: "2026-11-01T00:00:00.000Z",
+			},
+		});
+		await deliverWebhook(ctx, dispute(reference, "evt_d1", "lost"), headers);
+		expect(logs.some((l) => l.msg.includes("vendor shares were not taken back"))).toBe(true);
+		expect(orderRow(getCol, order.id).refundedTotal.amount).toBe(150000);
+	});
+
+	it("records a dispute on a subscription renewal and alerts the admins, without touching orders", async () => {
+		const { ctx, getCol, sent, order } = await paidOrder();
+		getCol("customers").set("cus_1", { id: "cus_1", email: "member@example.com" });
+		getCol("subscriptions").set("sub_1", {
+			id: "sub_1",
+			stripeSubscriptionId: "acme:plan_1",
+			providerId: "acme",
+			providerSubscriptionId: "plan_1",
+			customerId: "cus_1",
+		});
+		getCol("subscription_invoices").set("inv_1", {
+			id: "inv_1",
+			stripeInvoiceId: "acme:ren_1",
+			providerId: "acme",
+			providerInvoiceId: "ren_1",
+			subscriptionId: "sub_1",
+			amount: { currency: "KES", amount: 150000 },
+			status: "paid",
+			attemptCount: 0,
+			createdAt: "2026-11-01T00:00:00.000Z",
+		});
+
+		const res = await deliverWebhook(ctx, dispute("ren_1", "evt_r1", "open"), headers);
+		const body = (await res.json()) as { dispute?: string; orphan?: boolean };
+		expect(body.dispute).toBe("opened");
+		expect(body.orphan).toBeUndefined();
+		const invoice = getCol("subscription_invoices").get("inv_1") as {
+			disputes?: Array<{ status: string; providerDisputeId: string }>;
+		};
+		expect(invoice.disputes?.[0]).toMatchObject({ status: "open", providerDisputeId: "dp_1" });
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.subject).toBe("Payment disputed on a subscription renewal");
+		expect(sent[0]?.text).toContain("member@example.com");
+		expect(sent[0]?.text).toContain("ren_1");
+
+		await deliverWebhook(ctx, dispute("ren_1", "evt_r2", "lost"), headers);
+		expect(
+			(getCol("subscription_invoices").get("inv_1") as { disputes?: Array<{ status: string }> })
+				.disputes?.[0]?.status,
+		).toBe("lost");
+		expect(getCol("refunds").size).toBe(0);
+		expect(orderRow(getCol, order.id).refundedTotal.amount).toBe(0);
+		expect(sent).toHaveLength(1);
+	});
+});
+
 describe("Stripe dispute mapping", () => {
 	const disputeEvent = (type: string, status: string) =>
 		JSON.stringify({

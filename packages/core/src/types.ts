@@ -215,6 +215,8 @@ export interface OrderDispute {
 	providerDisputeId: string;
 	status: "open" | "won" | "lost";
 	amount: Money;
+	/** The provider's display name (e.g. "Paystack"), for the admin. */
+	providerLabel?: string;
 	reason?: string;
 	/** When the merchant must answer by, if the provider said. */
 	dueAt?: IsoDateTime;
@@ -592,6 +594,12 @@ export interface SubscriptionInvoice {
 	status: "draft" | "open" | "paid" | "uncollectible" | "void";
 	paidAt?: IsoDateTime;
 	attemptCount: number;
+	/**
+	 * Disputes on this renewal charge. Renewals have no order, so a dispute
+	 * on one is recorded here and alerted, but never counted as an order
+	 * refund.
+	 */
+	disputes?: OrderDispute[];
 	createdAt: IsoDateTime;
 }
 

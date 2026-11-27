@@ -360,12 +360,23 @@ function DisputeCard({ order }: { order: Order }) {
 	const disputes = order.disputes ?? [];
 	if (disputes.length === 0) return null;
 	const open = disputes.some((d) => d.status === "open");
+	const lost = disputes.some((d) => d.status === "lost");
+	const provider = disputes[0]?.providerLabel ?? disputes[0]?.providerId;
+	const vendorShares =
+		(order.vendorSplits?.length ?? 0) > 0 || (order.providerSplits?.allocations.length ?? 0) > 0;
 	return (
 		<Card title="Disputes">
 			{open && (
 				<Alert type="error" title="Don't ship until this is resolved">
-					The customer disputed this payment. Answer it in the {disputes[0]?.providerId}{" "}
-					dashboard before the deadline, or the customer usually gets the money back.
+					The customer disputed this payment. Answer it in the {provider} dashboard before the
+					deadline, or the customer usually gets the money back.
+				</Alert>
+			)}
+			{lost && vendorShares && (
+				<Alert type="warning" title="Vendor shares were not taken back">
+					This payment was split with vendors. The lost dispute took the whole amount back from the
+					store, but the vendors keep the shares they were paid. DashCommerce doesn't recover them;
+					settle it with the vendors yourself.
 				</Alert>
 			)}
 			<Table<OrderDispute>

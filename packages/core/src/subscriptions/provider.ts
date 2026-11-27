@@ -76,6 +76,41 @@ export async function findProviderSubscription(
 	return sub;
 }
 
+function refKey(providerId: string, providerSubscriptionRef: string): string {
+	return `subscription-ref:${providerId}:${providerSubscriptionRef}`;
+}
+
+/**
+ * Remember that the provider's own subscription id (`ref`) belongs to the
+ * subscription core stores as `providerSubscriptionId`. Kept in KV rather
+ * than on the row so it can be learnt before the row exists (Paystack can
+ * send `subscription.create` before the first `charge.success`) and needs no
+ * new storage index.
+ */
+export async function rememberProviderSubscriptionRef(
+	ctx: PluginContext,
+	providerId: string,
+	providerSubscriptionRef: string,
+	providerSubscriptionId: string,
+): Promise<void> {
+	const key = refKey(providerId, providerSubscriptionRef);
+	if ((await ctx.kv.get<string>(key)) === providerSubscriptionId) return;
+	await ctx.kv.set(key, providerSubscriptionId);
+}
+
+/** The local subscription for the provider's own subscription id, if core has learnt it. */
+export async function findProviderSubscriptionByRef(
+	ctx: PluginContext,
+	providerId: string,
+	providerSubscriptionRef: string,
+): Promise<Subscription | null> {
+	const providerSubscriptionId = await ctx.kv.get<string>(
+		refKey(providerId, providerSubscriptionRef),
+	);
+	if (!providerSubscriptionId) return null;
+	return findProviderSubscription(ctx, providerId, providerSubscriptionId);
+}
+
 export interface UpsertProviderSubscriptionInput {
 	providerId: string;
 	providerSubscriptionId: string;
