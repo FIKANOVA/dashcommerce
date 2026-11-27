@@ -59,7 +59,15 @@ function shop(settings: Record<string, unknown> = {}) {
 			...settings,
 		},
 		async (url, init) => {
-			if (url.includes("/v1/payment_intents") && init?.method === "POST") {
+			// Pressing Pay again cancels the earlier attempt's intent.
+			const cancel = url.match(/\/v1\/payment_intents\/([^/]+)\/cancel$/);
+			if (cancel && init?.method === "POST") {
+				return new Response(JSON.stringify({ id: cancel[1], status: "canceled" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url.endsWith("/v1/payment_intents") && init?.method === "POST") {
 				created += 1;
 				const params = new URLSearchParams(String(init.body ?? ""));
 				return new Response(

@@ -17,7 +17,12 @@
 
 import type { PluginContext, RouteContext } from "emdash";
 import { type PricingPolicy, recalculate } from "../cart/calculate";
-import { holdStock, sumActiveLocksForProduct } from "../cart/lock";
+import {
+	currentHold,
+	holdStock,
+	recordHoldPaymentIntent,
+	sumActiveLocksForProduct,
+} from "../cart/lock";
 import { getCart, save } from "../cart/store";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { money, zero } from "../money";
@@ -43,7 +48,11 @@ import {
 	createOneTimeCoupon,
 } from "../stripe/checkout-sessions";
 import type { StripeClientOptions } from "../stripe/client";
-import { createPaymentIntent } from "../stripe/payment-intents";
+import {
+	cancelPaymentIntent,
+	createPaymentIntent,
+	retrievePaymentIntent,
+} from "../stripe/payment-intents";
 import { loadTableTaxResolver } from "../tax/rates";
 import type { CartLineItem, CartState, StockLockEntry } from "../types";
 import { randomId } from "../util/ids";
@@ -67,6 +76,34 @@ async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 	if (policy.taxMode === "flat") policy.flatTaxPercent = pct;
 	if (policy.taxMode === "table") policy.taxResolver = await loadTableTaxResolver(ctx);
 	return policy;
+}
+
+/**
+ * Cancel the PaymentIntent of a shopper's replaced attempt. Returns false
+ * when it can't be cancelled (it succeeded, or Stripe refuses for its
+ * payment method), so the new attempt must wait.
+ */
+async function cancelEarlierIntent(
+	ctx: PluginContext,
+	paymentIntentId: string,
+	client: StripeClientOptions,
+): Promise<boolean> {
+	try {
+		await cancelPaymentIntent(ctx, paymentIntentId, client);
+		return true;
+	} catch (err) {
+		try {
+			const pi = await retrievePaymentIntent(ctx, paymentIntentId, client);
+			if (pi.status === "canceled") return true;
+		} catch {
+			// Fall through: without a known state, refuse rather than risk a second charge.
+		}
+		ctx.log.warn("Could not cancel the shopper's earlier PaymentIntent", {
+			paymentIntentId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
 }
 
 async function loadStripeClient(ctx: PluginContext): Promise<StripeClientOptions | null> {
@@ -328,6 +365,24 @@ export const checkoutRoutes = {
 			}
 			await save(ctx, recalculated);
 
+			// A new attempt replaces the shopper's earlier one. If that one
+			// still has a PaymentIntent (say a redirect method left
+			// processing), cancel it so both can't be paid.
+			const earlier = await currentHold(ctx, sessionId);
+			if (
+				earlier?.stripePaymentIntentId &&
+				!(await cancelEarlierIntent(ctx, earlier.stripePaymentIntentId, client))
+			) {
+				return new Response(
+					JSON.stringify({
+						error:
+							"Your earlier payment is still being processed. Wait a moment, then check your email or try again.",
+						code: "earlier_payment_processing",
+					}),
+					{ status: 409, headers: { "Content-Type": "application/json" } },
+				);
+			}
+
 			const orderDraftId = randomId();
 
 			// Stock soft-lock (replaces this shopper's earlier hold).
@@ -400,6 +455,7 @@ export const checkoutRoutes = {
 				client,
 				`pi:${orderDraftId}`,
 			);
+			await recordHoldPaymentIntent(ctx, orderDraftId, pi.id);
 
 			// Return a raw Response to match the wire shape of every other
 			// storefront route (cart/*, orders/*, etc.). Returning a plain
