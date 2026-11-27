@@ -205,6 +205,27 @@ describe("regions checked against the zones", () => {
 		expect(options.map((o) => o.methodId)).toEqual(["ship_ke"]);
 	});
 
+	it("still applies a tax rate whose region was saved as a name", async () => {
+		const { ctx, call } = shop();
+		await ctx.kv.set("settings:taxMode", "table");
+		await ctx.storage.tax_rates.put("rate_nbo", {
+			id: "rate_nbo",
+			country: "KE",
+			region: "Nairobi",
+			taxClass: "standard",
+			rate: 2,
+			name: "Nairobi levy",
+			compound: false,
+			appliesToShipping: false,
+			priority: 0,
+		});
+		const sessionId = await newCart(ctx);
+		const res = await call("cart/shipping-address", sessionId, { address: address("Nairobi City") });
+		const cart = res.body.cart as CartState;
+		expect(cart.shippingAddress?.region).toBe("30");
+		expect(cart.taxLines.map((l) => l.label)).toEqual(["Nairobi levy"]);
+	});
+
 	it("leaves the region alone in a country whose zones name none", async () => {
 		const { cart } = await ratesFor({ country: "UG", region: "Kampala" });
 		expect(cart.shippingAddress?.region).toBe("Kampala");
