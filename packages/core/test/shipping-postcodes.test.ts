@@ -6,6 +6,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { PluginContext, RouteContext } from "emdash";
 import sandbox from "../src/sandbox-entry";
 import { pickZone } from "../src/shipping/calculate";
@@ -294,5 +296,25 @@ describe("postcodes in the admin zone routes", () => {
 			expect(res.status).toBe(400);
 			expect(String(res.body.error)).toMatch(/postcode/);
 		}
+	});
+});
+
+describe("the hosted checkout form", () => {
+	const form = readFileSync(
+		fileURLToPath(new URL("../src/astro/components/HostedCheckoutForm.astro", import.meta.url)),
+		"utf8",
+	);
+
+	it("marks the postcode optional, and required only in the countries listed", () => {
+		expect(form).toContain('Postal code <small id="hc-postal-hint">(optional)</small>');
+		expect(form).toContain("postcodeCountries = body.postcodes ?? [];");
+		expect(form).toContain("const required = postcodeCountries.includes(country);");
+		expect(form).toContain("postalInput.required = required;");
+	});
+
+	it("re-quotes when the postcode changes after rates are shown", () => {
+		expect(form).toMatch(
+			/postalInput\?\.addEventListener\("change", \(\) => \{\s*if \(!methStep \|\| methStep\.hidden\) return;[\s\S]*?locForm\.requestSubmit\(\);/,
+		);
 	});
 });
