@@ -101,6 +101,19 @@ async function readZones(ctx: PluginContext): Promise<ShippingZone[]> {
 	return (await zonesStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id }));
 }
 
+/**
+ * Why a postcode sent to a cart route is refused, or null when it is fine:
+ * absent, or short text of letters, digits, spaces and hyphens.
+ */
+function postcodeError(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string") return "postalCode must be text";
+	if (!isPlausiblePostcode(value.trim())) {
+		return `postalCode must be up to ${POSTCODE_MAX_LENGTH} letters, digits, spaces or hyphens`;
+	}
+	return null;
+}
+
 /** The address with its region checked against the zones (see `checkedRegion`). */
 function withCheckedRegion<A extends { country?: string; region?: unknown }>(
 	address: A,
@@ -417,6 +430,8 @@ export const cartRoutes = {
 		handler: async (routeCtx: RouteContext, ctx: PluginContext) => {
 			const body = routeCtx.input as { address?: CartState["shippingAddress"] };
 			if (!body.address) return errorResponse("address required", 400);
+			const badPostcode = postcodeError(body.address.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const shippingAddress = withCheckedRegion(body.address, await readZones(ctx));
@@ -444,6 +459,10 @@ export const cartRoutes = {
 				shippingAddress?: CartState["shippingAddress"];
 				notes?: string;
 			};
+			const badPostcode =
+				postcodeError(body.shippingAddress?.postalCode) ??
+				postcodeError(body.billingAddress?.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const next: CartState = { ...cart };
@@ -657,16 +676,9 @@ export const cartRoutes = {
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
 			}
-			if (body.postalCode !== undefined && typeof body.postalCode !== "string") {
-				return errorResponse("postalCode must be text", 400);
-			}
-			const postalCode = body.postalCode?.trim() ?? "";
-			if (!isPlausiblePostcode(postalCode)) {
-				return errorResponse(
-					`postalCode must be up to ${POSTCODE_MAX_LENGTH} letters, digits, spaces or hyphens`,
-					400,
-				);
-			}
+			const badPostcode = postcodeError(body.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
+			const postalCode = typeof body.postalCode === "string" ? body.postalCode.trim() : "";
 			if (
 				body.region !== undefined &&
 				(typeof body.region !== "string" || body.region.trim().length > 64)

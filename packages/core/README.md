@@ -167,7 +167,7 @@ A zone lists the places it delivers to, and its methods give the rates. Each loc
 - A location with postcodes matches only an address whose postcode matches one entry, and its region too when it lists both. An address without a postcode gets the zone that covers the rest of the country.
 - Zones are tried by `order`, lowest first. Among matching zones with the same order, a postcode match beats a region match, which beats a country-wide zone, so a "Lisbon" zone works next to a "Portugal" zone on the default order.
 
-`cart/shipping-regions` also returns `postcodes`, the countries where a zone lists postcodes. Hosted checkout requires the postcode for those countries only, and fetches the rates again when the shopper changes it; elsewhere the postcode stays optional. `cart/shipping-location` refuses a postcode longer than 16 characters or with anything but letters, digits, spaces and hyphens. `checkout/create-session` and `checkout/create-intent` re-quote shipping with the same matching before taking payment.
+`cart/shipping-regions` also returns `postcodes`, the countries where a zone lists postcodes. Hosted checkout requires the postcode for those countries only, and fetches the rates again when the shopper changes it; elsewhere the postcode stays optional. `cart/shipping-location`, `cart/shipping-address` and `cart/contact` refuse a postcode longer than 16 characters or with anything but letters, digits, spaces and hyphens. `checkout/create-session` and `checkout/create-intent` re-quote shipping with the same matching before taking payment.
 
 ### Admin-gated routes
 

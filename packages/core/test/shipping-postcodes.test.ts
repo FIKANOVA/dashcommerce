@@ -190,6 +190,56 @@ describe("rates by postcode through the cart routes", () => {
 	});
 });
 
+describe("postcodes on the full-address routes", () => {
+	const address = (postalCode: unknown) => ({
+		firstName: "Ana",
+		lastName: "Silva",
+		line1: "Rua Augusta 1",
+		city: "Lisboa",
+		region: "",
+		postalCode,
+		country: "PT",
+	});
+	const bad = [12345, "1".repeat(17), "1000<script>"];
+
+	it("cart/shipping-address refuses a postcode that is not short, plain text", async () => {
+		const { ctx, call } = shop();
+		const sessionId = await newCart(ctx);
+		for (const postalCode of bad) {
+			const res = await call("cart/shipping-address", sessionId, { address: address(postalCode) });
+			expect(res.status).toBe(400);
+			expect(String(res.body.error)).toMatch(/postalCode/);
+		}
+		const ok = await call("cart/shipping-address", sessionId, { address: address("1100-148") });
+		expect(ok.status).toBe(200);
+		const rates = await call("cart/shipping-methods", sessionId);
+		expect((rates.body.options as Array<{ methodId: string }>).map((o) => o.methodId)).toEqual([
+			"ship_lis",
+		]);
+	});
+
+	it("cart/contact refuses a bad shipping or billing postcode", async () => {
+		const { ctx, call } = shop();
+		const sessionId = await newCart(ctx);
+		for (const postalCode of bad) {
+			for (const key of ["shippingAddress", "billingAddress"]) {
+				const res = await call("cart/contact", sessionId, {
+					email: "shopper@example.com",
+					[key]: address(postalCode),
+				});
+				expect(res.status).toBe(400);
+				expect(String(res.body.error)).toMatch(/postalCode/);
+			}
+		}
+		const ok = await call("cart/contact", sessionId, {
+			email: "shopper@example.com",
+			shippingAddress: address("1100-148"),
+			billingAddress: address(""),
+		});
+		expect(ok.status).toBe(200);
+	});
+});
+
 describe("precedence at the same order", () => {
 	const address = (region: string, postalCode: string): Address => ({
 		firstName: "Wanjiru",
