@@ -343,6 +343,11 @@ export interface Refund {
 		orderItemId: string;
 		quantity: number;
 		amount: Money;
+		/**
+		 * Units actually put back: the restock asked for, clamped to the
+		 * stock the order still held. Unset on refunds before this field.
+		 */
+		restockedQuantity?: number;
 	}>;
 	restocked: boolean;
 	/**

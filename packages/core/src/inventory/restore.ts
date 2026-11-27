@@ -102,15 +102,15 @@ export async function restoreForOrderItem(
 }
 
 /**
- * The units of each order item still out of stock because of this order:
- * what it took, less what refunds or a cancel already put back. Read from
- * the ledger, so it is never put back twice, and an order that took no
- * stock (untracked products, digital items) gives nothing.
+ * Clamp the units asked back for each order item to what the order still
+ * holds out of stock: what it took, less what refunds or a cancel already
+ * put back. Read from the ledger, so stock is never put back twice, and an
+ * item that took no stock (untracked products, digital items) gets 0.
  */
-export async function outstandingStock(
+export async function clampToOutstanding(
 	ctx: PluginContext,
 	orderId: string,
-	items: OrderItem[],
+	wanted: Array<{ orderItem: OrderItem; quantity: number }>,
 ): Promise<Array<{ orderItem: OrderItem; quantity: number }>> {
 	const key = (productId: string, variantId?: string) => `${productId}:${variantId ?? ""}`;
 	const out = new Map<string, number>();
@@ -118,13 +118,20 @@ export async function outstandingStock(
 		const k = key(entry.productId, entry.variantId);
 		out.set(k, (out.get(k) ?? 0) - entry.delta);
 	}
-	const result: Array<{ orderItem: OrderItem; quantity: number }> = [];
-	for (const orderItem of items) {
+	return wanted.map(({ orderItem, quantity: asked }) => {
 		const k = key(orderItem.productId, orderItem.variantId);
-		const quantity = Math.min(orderItem.quantity, out.get(k) ?? 0);
-		if (quantity <= 0) continue;
+		const quantity = Math.max(0, Math.min(asked, out.get(k) ?? 0));
 		out.set(k, (out.get(k) ?? 0) - quantity);
-		result.push({ orderItem, quantity });
-	}
-	return result;
+		return { orderItem, quantity };
+	});
+}
+
+/** The units of each order item the order still holds out of stock (see `clampToOutstanding`). */
+export async function outstandingStock(
+	ctx: PluginContext,
+	orderId: string,
+	items: OrderItem[],
+): Promise<Array<{ orderItem: OrderItem; quantity: number }>> {
+	const all = items.map((orderItem) => ({ orderItem, quantity: orderItem.quantity }));
+	return (await clampToOutstanding(ctx, orderId, all)).filter((l) => l.quantity > 0);
 }

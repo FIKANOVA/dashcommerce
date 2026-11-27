@@ -162,3 +162,76 @@ describe("stock on an on-hold duplicate order", () => {
 		expect(products.get("prod_mug")?.data.stock_quantity).toBe(3);
 	});
 });
+
+describe("restock is clamped to the stock the order still holds", () => {
+	function mugLine(getCol: (name: string) => Map<string, Record<string, unknown>>, orderId: string) {
+		const entry = [...getCol("order_items").entries()].find(([, it]) => it.orderId === orderId);
+		if (!entry) throw new Error("no order item");
+		return entry[0];
+	}
+
+	it("a refund with Restock after a cancel puts nothing back twice", async () => {
+		const { ctx, duplicate, products, getCol } = await duplicateOrder();
+		await admin(ctx, "admin/orders/status", duplicate.id, { status: "cancelled" });
+		expect(products.get("prod_mug")?.data.stock_quantity).toBe(4);
+
+		const res = await admin(ctx, "admin/orders/refund", duplicate.id, {
+			amount: 80000,
+			currency: "KES",
+			restock: true,
+			lineItemRefunds: [
+				{ orderItemId: mugLine(getCol, duplicate.id), quantity: 1, amount: 80000, currency: "KES" },
+			],
+		});
+		expect(res.status).toBe(200);
+		expect(products.get("prod_mug")?.data.stock_quantity).toBe(4);
+		const refund = [...getCol("refunds").values()][0] as unknown as Refund;
+		expect(refund.lineItemRefunds?.[0]?.restockedQuantity).toBe(0);
+	});
+
+	it("two partial refunds with Restock put back only what the order took", async () => {
+		const { ctx, duplicate, products, getCol } = await duplicateOrder();
+		const line = mugLine(getCol, duplicate.id);
+		for (const n of [1, 2]) {
+			const res = await admin(ctx, "admin/orders/refund", duplicate.id, {
+				amount: 40000,
+				currency: "KES",
+				restock: true,
+				lineItemRefunds: [{ orderItemId: line, quantity: 1, amount: 40000, currency: "KES" }],
+				reason: `part ${n}`,
+			});
+			expect(res.status).toBe(200);
+		}
+		expect(products.get("prod_mug")?.data.stock_quantity).toBe(4);
+	});
+
+	it("asking back more units than the line took restocks only those taken", async () => {
+		const { ctx, duplicate, products, getCol } = await duplicateOrder();
+		const res = await admin(ctx, "admin/orders/refund", duplicate.id, {
+			amount: 80000,
+			currency: "KES",
+			restock: true,
+			lineItemRefunds: [
+				{ orderItemId: mugLine(getCol, duplicate.id), quantity: 5, amount: 80000, currency: "KES" },
+			],
+		});
+		expect(res.status).toBe(200);
+		expect(products.get("prod_mug")?.data.stock_quantity).toBe(4);
+	});
+
+	it("an untracked line restocks nothing", async () => {
+		const { ctx, duplicate, products, getCol } = await duplicateOrder();
+		// As for an untracked or digital product: the order took no stock.
+		getCol("inventory_ledger").clear();
+		const res = await admin(ctx, "admin/orders/refund", duplicate.id, {
+			amount: 80000,
+			currency: "KES",
+			restock: true,
+			lineItemRefunds: [
+				{ orderItemId: mugLine(getCol, duplicate.id), quantity: 1, amount: 80000, currency: "KES" },
+			],
+		});
+		expect(res.status).toBe(200);
+		expect(products.get("prod_mug")?.data.stock_quantity).toBe(3);
+	});
+});
