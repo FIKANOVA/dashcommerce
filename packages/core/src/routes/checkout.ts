@@ -20,7 +20,9 @@ import { type PricingPolicy, recalculate } from "../cart/calculate";
 import {
 	currentHold,
 	holdStock,
+	lastHostedSession,
 	recordHoldCheckoutSession,
+	rememberHostedSession,
 	recordHoldPaymentIntent,
 	sumActiveLocksForProduct,
 } from "../cart/lock";
@@ -687,14 +689,18 @@ export const checkoutRoutes = {
 
 			// A new attempt replaces the shopper's earlier one. If that one
 			// still has an open Stripe Checkout Session (the shopper went back
-			// from Stripe's page), expire it so both can't be paid.
+			// from Stripe's page, maybe hours ago), expire it so both can't be
+			// paid. The session pointer outlives the 15-minute hold.
 			if (provider.id === "stripe") {
-				const earlier = await currentHold(ctx, sessionId);
-				if (
-					earlier?.stripeCheckoutSessionId &&
-					!(await expireEarlierSession(ctx, earlier.stripeCheckoutSessionId, client))
-				) {
-					return earlierPaymentProcessing();
+				const earlier = new Set<string>();
+				const pointed = await lastHostedSession(ctx, sessionId);
+				if (pointed) earlier.add(pointed);
+				const held = (await currentHold(ctx, sessionId))?.stripeCheckoutSessionId;
+				if (held) earlier.add(held);
+				for (const checkoutSessionId of earlier) {
+					if (!(await expireEarlierSession(ctx, checkoutSessionId, client))) {
+						return earlierPaymentProcessing();
+					}
 				}
 			}
 
@@ -1089,6 +1095,7 @@ export const checkoutRoutes = {
 			});
 			if (provider.id === "stripe" && checkoutResult.checkoutReference) {
 				await recordHoldCheckoutSession(ctx, orderDraftId, checkoutResult.checkoutReference);
+				await rememberHostedSession(ctx, sessionId, orderDraftId, checkoutResult.checkoutReference);
 			}
 
 			return new Response(

@@ -20,7 +20,12 @@
  */
 
 import type { PluginContext, StorageCollection } from "emdash";
-import { earlierPaidAttempt, recordPaidAttempt, releaseLock } from "../cart/lock";
+import {
+	earlierPaidAttempt,
+	forgetHostedSession,
+	recordPaidAttempt,
+	releaseLock,
+} from "../cart/lock";
 import { issueGrantsForOrder } from "../downloads/grant";
 import { decrementForOrderItem } from "../inventory/decrement";
 import { money, zero } from "../money";
@@ -582,6 +587,7 @@ async function createClaimedOrder(
 	// (7) Release the soft-lock.
 	try {
 		await releaseLock(ctx, orderDraftId);
+		if (cart.sessionId) await forgetHostedSession(ctx, cart.sessionId, orderDraftId);
 	} catch (err) {
 		ctx.log.warn("Stock lock release failed", {
 			orderDraftId,
