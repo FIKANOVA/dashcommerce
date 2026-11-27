@@ -14,7 +14,7 @@ import { normalizeProductFields } from "../products/normalize";
 /** Local alias: emdash's ContentAccessWithWrite is not re-exported. */
 type ContentWriteOp = NonNullable<ContentAccess["update"]>;
 import type { InventoryLedgerReason, OrderItem, ProductFields } from "../types";
-import { putLedgerEntry } from "./ledger";
+import { listLedgerForOrder, putLedgerEntry } from "./ledger";
 
 export interface RestoreInput {
 	orderItem: OrderItem;
@@ -99,4 +99,32 @@ export async function restoreForOrderItem(
 		...(note ? { note } : {}),
 	});
 	return { newStock: next };
+}
+
+/**
+ * The units of each order item still out of stock because of this order:
+ * what it took, less what refunds or a cancel already put back. Read from
+ * the ledger, so it is never put back twice, and an order that took no
+ * stock (untracked products, digital items) gives nothing.
+ */
+export async function outstandingStock(
+	ctx: PluginContext,
+	orderId: string,
+	items: OrderItem[],
+): Promise<Array<{ orderItem: OrderItem; quantity: number }>> {
+	const key = (productId: string, variantId?: string) => `${productId}:${variantId ?? ""}`;
+	const out = new Map<string, number>();
+	for (const entry of await listLedgerForOrder(ctx, orderId)) {
+		const k = key(entry.productId, entry.variantId);
+		out.set(k, (out.get(k) ?? 0) - entry.delta);
+	}
+	const result: Array<{ orderItem: OrderItem; quantity: number }> = [];
+	for (const orderItem of items) {
+		const k = key(orderItem.productId, orderItem.variantId);
+		const quantity = Math.min(orderItem.quantity, out.get(k) ?? 0);
+		if (quantity <= 0) continue;
+		out.set(k, (out.get(k) ?? 0) - quantity);
+		result.push({ orderItem, quantity });
+	}
+	return result;
 }

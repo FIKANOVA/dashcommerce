@@ -20,7 +20,7 @@
 
 import type { PluginContext, StorageCollection } from "emdash";
 import { OversoldError, decrementForOrderItem } from "../inventory/decrement";
-import { restoreForOrderItem } from "../inventory/restore";
+import { outstandingStock, restoreForOrderItem } from "../inventory/restore";
 import { CurrencyMismatchError, type Money, add, money } from "../money";
 import { loadPaymentProviderCredentials, requirePaymentProvider } from "../payment-provider";
 import type { StripeClientOptions } from "../stripe/client";
@@ -79,6 +79,7 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 	if (input.amount.amount > remaining) {
 		throw new Error(`Refund ${input.amount.amount} exceeds remaining refundable ${remaining}`);
 	}
+	const lineItemRefunds = await restockLines(ctx, order, input, remaining);
 
 	// Provider call first — if this fails, we don't write anything.
 	const stripeRefund = await providerRefundWithDedup(ctx, order, input);
@@ -98,7 +99,7 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 					: "pending",
 		stripeRefundId: stripeRefund.id,
 		refundRequestId: input.idempotencyKey,
-		...(input.lineItemRefunds ? { lineItemRefunds: input.lineItemRefunds } : {}),
+		...(lineItemRefunds ? { lineItemRefunds } : {}),
 		restocked: Boolean(input.restock) && stripeRefund.status !== "failed",
 		orderStatusBefore: order.status,
 		createdAt: new Date().toISOString(),
@@ -117,10 +118,10 @@ export async function refundOrder(ctx: PluginContext, input: RefundOrderInput): 
 	}
 
 	// Optional restock per line item.
-	if (input.restock && input.lineItemRefunds?.length) {
+	if (input.restock && lineItemRefunds?.length) {
 		const items = await loadOrderItems(ctx, order.id);
 		const byId = new Map(items.map((it) => [it.id, it]));
-		for (const li of input.lineItemRefunds) {
+		for (const li of lineItemRefunds) {
 			const orderItem = byId.get(li.orderItemId);
 			if (!orderItem) continue;
 			if (li.quantity <= 0) continue;
@@ -444,6 +445,35 @@ async function reverseFailedRefund(
 			});
 		}
 	}
+}
+
+/**
+ * The lines a refund restocks. The caller's lines when given. "Restock
+ * items" without lines (the admin's toggle) restocks everything the order
+ * still holds, which only makes sense when the refund is for the whole
+ * remaining balance; a partial one must say which items come back.
+ */
+async function restockLines(
+	ctx: PluginContext,
+	order: Order,
+	input: RefundOrderInput,
+	remaining: number,
+): Promise<LineItemRefund[] | undefined> {
+	if (!input.restock || input.lineItemRefunds?.length) return input.lineItemRefunds;
+	if (input.amount.amount < remaining) {
+		throw new Error(
+			"To restock on a partial refund, say which items come back. Restock items on its own works with a refund of the whole remaining balance.",
+		);
+	}
+	const items = await loadOrderItems(ctx, order.id);
+	return (await outstandingStock(ctx, order.id, items)).map(({ orderItem, quantity }) => ({
+		orderItemId: orderItem.id,
+		quantity,
+		amount: money(
+			orderItem.total.currency,
+			Math.round((orderItem.total.amount * quantity) / orderItem.quantity),
+		),
+	}));
 }
 
 /** The order status recorded by the order's earliest refund, if any. */

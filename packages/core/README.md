@@ -227,6 +227,8 @@ React pages served at `/_emdash/admin/plugins/dashcommerce/*`:
 - Settings (all `settings:*` keys with per-key validation)
 - Dashboard widgets: Revenue, Low Stock, Recent Orders, Pending Reviews, Failed Renewals
 
+Stock comes back when an order is cancelled, and when it is refunded with "Restock items". Both read the inventory ledger, so stock already put back is never put back twice. "Restock items" without chosen lines (the admin's toggle) needs a refund of the whole remaining balance; a partial refund must send `lineItemRefunds` saying which items come back, or it is refused with 400.
+
 Refunds and payment settings are for EmDash Admins only. EmDash already sends every DashCommerce admin route through its `plugins:manage` permission, which only Admins hold, so Editors and below get a 403 from EmDash before DashCommerce runs. DashCommerce checks the caller's role (`ctx.user.role`) again on the money routes, so they stay admin-only if other admin routes are later opened to Editors:
 
 - `POST /admin/orders/refund` — 403 "Only an admin can issue refunds."

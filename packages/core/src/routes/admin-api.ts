@@ -1,3 +1,4 @@
+import { outstandingStock, restoreForOrderItem } from "../inventory/restore";
 import { orderItemFromStorage } from "../orders/order-item-storage";
 /**
  * Admin backend API — every page + widget in `admin/entry.tsx` calls
@@ -450,6 +451,12 @@ async function postOrderStatus(
 	};
 	await storeOf<Order>(ctx, "orders").put(orderId, updated);
 
+	// A cancelled order gives back the stock it still holds (a refund with
+	// "Restock items" may already have put some back).
+	if (order.status !== "cancelled" && body.status === "cancelled") {
+		await putBackCancelledStock(ctx, orderId);
+	}
+
 	// On fulfilment flip, queue a post-purchase review request. Best-effort
 	// and rate-limited inside `sendReviewRequest` via a KV marker, so a
 	// merchant flipping statuses back and forth won't cause duplicate sends.
@@ -472,6 +479,21 @@ async function postOrderStatus(
 	}
 
 	return json({ order: updated });
+}
+
+async function putBackCancelledStock(ctx: PluginContext, orderId: string): Promise<void> {
+	const items = await loadOrderItems(ctx, orderId);
+	for (const { orderItem, quantity } of await outstandingStock(ctx, orderId, items)) {
+		try {
+			await restoreForOrderItem(ctx, { orderItem, quantity, reason: "order_cancelled" });
+		} catch (err) {
+			ctx.log.warn("Stock restore failed when cancelling an order", {
+				orderId,
+				orderItemId: orderItem.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
 }
 
 async function loadOrderItems(
