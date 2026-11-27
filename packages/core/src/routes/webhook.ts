@@ -737,7 +737,7 @@ async function recordProviderSplitSettlement(
 	});
 }
 
-async function handleNormalizedChargeSucceeded(
+export async function handleNormalizedChargeSucceeded(
 	ctx: PluginContext,
 	event: Extract<NormalizedPaymentEvent, { type: "charge.succeeded" }>,
 ): Promise<Response> {
@@ -889,6 +889,8 @@ async function handleNormalizedChargeSucceeded(
 		},
 		cartSnapshot: cart,
 		orderDraftId: event.orderDraftId,
+		...(snapshot.channel ? { channel: snapshot.channel } : {}),
+		...(snapshot.soldBy ? { soldBy: snapshot.soldBy } : {}),
 	});
 
 	if (!duplicate) {

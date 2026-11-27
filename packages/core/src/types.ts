@@ -193,6 +193,8 @@ export type OrderStatus =
 	| "partially-refunded"
 	| "failed";
 
+export type OrderChannel = "online" | "in_person";
+
 export type PaymentStatus = "pending" | "paid" | "failed" | "refunded" | "partially-refunded";
 
 export interface VendorSplit {
@@ -273,6 +275,13 @@ export interface Order {
 	/** Disputes (chargebacks) the payment provider reported on this order. */
 	disputes?: OrderDispute[];
 	subscriptionIds?: string[];
+	/**
+	 * `in_person` for a counter sale taken in the admin. Unset means the
+	 * online shop, matching rows written before counter sales existed.
+	 */
+	channel?: OrderChannel;
+	/** EmDash user id of the staff member who made a counter sale. */
+	soldBy?: string;
 	stripePaymentIntentId: string; // unique — Stripe PaymentIntent id
 	/**
 	 * Gateway that captured this payment. Unset means Stripe, matching

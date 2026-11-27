@@ -65,7 +65,7 @@ const DRAFT_PREFIX = "draft:";
 const DRAFT_TTL_MS = 15 * 60 * 1000;
 const LOCK_TTL_MS = 15 * 60 * 1000;
 
-async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
+export async function readPricingPolicy(ctx: PluginContext): Promise<PricingPolicy> {
 	const mode = (await ctx.kv.get<string>("settings:taxMode")) ?? "flat";
 	const pct = (await ctx.kv.get<number>("settings:flatTaxRatePercent")) ?? 0;
 	const onShipping = (await ctx.kv.get<boolean>("settings:taxAppliesToShipping")) ?? false;
@@ -124,7 +124,7 @@ interface RepriceResult {
 	stockEntries: StockLockEntry[];
 }
 
-async function repriceAndCheckStock(ctx: PluginContext, cart: CartState): Promise<RepriceResult> {
+export async function repriceAndCheckStock(ctx: PluginContext, cart: CartState): Promise<RepriceResult> {
 	const errors: RepriceError[] = [];
 	const out: CartLineItem[] = [];
 	const stockEntries: StockLockEntry[] = [];
@@ -1068,6 +1068,9 @@ export type CheckoutDraftSnapshot = {
 	createdAt: string;
 	providerId?: string;
 	checkoutReference?: string;
+	/** Set by a counter sale (see routes/counter.ts). */
+	channel?: "in_person";
+	soldBy?: string;
 };
 
 export function draftKey(orderDraftId: string): string {

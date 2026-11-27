@@ -264,6 +264,10 @@ export interface CreateOrderInput {
 	paymentIntent: StripePaymentIntent;
 	cartSnapshot: CartState;
 	orderDraftId: string;
+	/** Set for a counter sale; unset means the online shop. */
+	channel?: "in_person";
+	/** EmDash user id of the staff member who made a counter sale. */
+	soldBy?: string;
 }
 
 export async function createOrderFromPaymentIntent(
@@ -395,6 +399,8 @@ export async function createOrderFromPaymentIntent(
 		taxLines: cart.taxLines,
 		couponCodes: cart.coupons.map((c) => c.code),
 		stripePaymentIntentId: pi.id,
+		...(input.channel ? { channel: input.channel } : {}),
+		...(input.soldBy ? { soldBy: input.soldBy } : {}),
 		providerId: pi.metadata?.providerId ?? "stripe",
 		paymentReference: pi.id,
 		...(pi.metadata?.checkoutReference ? { checkoutReference: pi.metadata.checkoutReference } : {}),
