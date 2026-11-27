@@ -96,6 +96,12 @@ export interface InitCheckoutInput {
 	automaticTax?: boolean;
 	allowPromotionCodes?: boolean;
 	clientReferenceId?: string;
+	/**
+	 * When the hosted page stops taking payment, as Unix seconds. Stripe
+	 * accepts 30 minutes to 24 hours from creation; providers without such
+	 * a setting ignore it.
+	 */
+	expiresAt?: number;
 	metadata?: Record<string, string>;
 	/** Copied onto the PaymentIntent Stripe creates (`mode=payment` only). */
 	paymentIntentMetadata?: Record<string, string>;

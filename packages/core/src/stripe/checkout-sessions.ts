@@ -77,6 +77,8 @@ export interface CreateCheckoutSessionInput {
 	shippingOptions?: CheckoutShippingOption[];
 	allowPromotionCodes?: boolean;
 	clientReferenceId?: string;
+	/** `expires_at`, Unix seconds (30 minutes to 24 hours from now). */
+	expiresAt?: number;
 	metadata?: Record<string, string>;
 	/** Metadata copied onto the PaymentIntent Stripe creates for this session. */
 	paymentIntentMetadata?: Record<string, string>;
@@ -182,6 +184,7 @@ export async function createCheckoutSession(
 
 	if (input.customerEmail) params.customer_email = input.customerEmail;
 	if (input.clientReferenceId) params.client_reference_id = input.clientReferenceId;
+	if (input.expiresAt !== undefined) params.expires_at = input.expiresAt;
 	if (input.allowPromotionCodes) params.allow_promotion_codes = true;
 	if (input.billingAddressCollection) {
 		params.billing_address_collection = input.billingAddressCollection;

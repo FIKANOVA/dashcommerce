@@ -89,6 +89,7 @@ export function toCreateCheckoutSessionInput(input: InitCheckoutInput): CreateCh
 		lineItems: mapLineItems(input),
 		...(input.customer.email ? { customerEmail: input.customer.email } : {}),
 		clientReferenceId: input.clientReferenceId ?? input.orderDraftId,
+		...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
 		billingAddressCollection: input.billingAddressCollection ?? "auto",
 		allowPromotionCodes: input.allowPromotionCodes ?? false,
 		metadata: { orderDraftId: input.orderDraftId, ...input.metadata },
