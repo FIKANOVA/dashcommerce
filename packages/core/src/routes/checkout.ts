@@ -330,9 +330,20 @@ export const checkoutRoutes = {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
-			if (!withContact.billingAddress || !withContact.shippingAddress) {
+			// Local pickup: nothing is delivered, so one address is enough, as
+			// at hosted checkout (the order uses it for both).
+			const isPickup = withContact.shippingMethod?.pickup !== undefined;
+			if (
+				isPickup
+					? !withContact.billingAddress && !withContact.shippingAddress
+					: !withContact.billingAddress || !withContact.shippingAddress
+			) {
 				return new Response(
-					JSON.stringify({ error: "Billing and shipping addresses are required" }),
+					JSON.stringify({
+						error: isPickup
+							? "A billing address is required"
+							: "Billing and shipping addresses are required",
+					}),
 					{ status: 400, headers: { "Content-Type": "application/json" } },
 				);
 			}

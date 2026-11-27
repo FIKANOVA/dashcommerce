@@ -274,3 +274,66 @@ describe("checking out", () => {
 		expect(session.body.missing).toEqual(["address"]);
 	});
 });
+
+describe("embedded Stripe card form", () => {
+	/** The pickup shop on Stripe Elements; Stripe creates any intent asked for. */
+	async function stripeShop() {
+		const h = await shop();
+		await h.ctx.kv.set("settings:paymentProvider", "stripe");
+		await h.ctx.kv.set("settings:checkoutMode", "embedded");
+		await h.ctx.kv.set("settings:stripeSecretKey", "sk_test_pickup");
+		(h.ctx as unknown as { http: { fetch: (url: string) => Promise<Response> } }).http = {
+			async fetch(url: string) {
+				if (!url.endsWith("/v1/payment_intents")) throw new Error(`Unexpected request: ${url}`);
+				return new Response(
+					JSON.stringify({
+						id: "pi_pickup",
+						client_secret: "pi_pickup_secret",
+						amount: 120000,
+						currency: "kes",
+						status: "requires_payment_method",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		};
+		return h;
+	}
+
+	/** A one-mug cart with the method chosen and only the shopper's email given. */
+	async function emailOnlyCart(ctx: PluginContext, sessionId: string, methodId: string) {
+		await cartWithMethod(ctx, sessionId, methodId);
+		const cart = (await ctx.kv.get(`cart:${sessionId}`)) as Record<string, unknown>;
+		await ctx.kv.set(`cart:${sessionId}`, { ...cart, billingAddress: undefined });
+	}
+
+	it("takes a pickup cart's payment without a billing or delivery address", async () => {
+		const { ctx } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: { type: "local_pickup", pickup: pickupDetails },
+		});
+		const sessionId = "sess_pickup_card";
+		await emailOnlyCart(ctx, sessionId, (method.body.method as ShippingMethod).id);
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(200);
+		expect(intent.body.paymentIntentId).toBe("pi_pickup");
+	});
+
+	it("still wants both addresses for a delivery cart", async () => {
+		const { ctx } = await stripeShop();
+		const method = await addMethod(ctx, {
+			title: "Courier",
+			type: "flat_rate",
+			config: { type: "flat_rate", amount: { amount: 30000, currency: "KES" } },
+		});
+		const sessionId = "sess_delivery_card";
+		await emailOnlyCart(ctx, sessionId, (method.body.method as ShippingMethod).id);
+
+		const intent = await call(ctx, "checkout/create-intent", {}, { sessionId });
+		expect(intent.status).toBe(400);
+		expect(intent.body.error).toBe("Billing and shipping addresses are required");
+	});
+});
