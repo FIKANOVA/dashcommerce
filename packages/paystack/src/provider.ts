@@ -30,7 +30,10 @@ import type {
 	VerifyWebhookInput,
 	VerifyWebhookResult,
 } from "@dashcommerce/core/payment-provider";
-import { CurrencyNotSupportedError } from "@dashcommerce/core/payment-provider";
+import {
+	CurrencyNotSupportedError,
+	SubscriptionActionRefusedError,
+} from "@dashcommerce/core/payment-provider";
 import { PaystackApiError, type PaystackClientOptions, call, callEnvelope } from "./client";
 import { PAYSTACK_LOGO } from "./logo";
 import { verifyPaystackSignature } from "./webhook-verify";
@@ -767,7 +770,46 @@ async function subscriptionForPlan(
 		)
 		.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 	const row = usable[0];
-	if (!row) throw new Error(`Paystack has no subscription on plan ${planCode}`);
+	if (!row) {
+		throw new SubscriptionActionRefusedError(`Paystack has no subscription on plan ${planCode}`);
+	}
+	return row;
+}
+
+/**
+ * Disable or enable the subscription on a plan. Paystack answers a request it
+ * won't do (already inactive, unknown code) with a 4xx: that is a refusal,
+ * not a fault, so core shows the admin Paystack's reason instead of a 500.
+ * Bad keys (401/403) and Paystack outages still throw as they are.
+ */
+async function subscriptionAction(
+	ctx: PaymentProviderRuntimeContext,
+	client: PaystackClientOptions,
+	planCode: string,
+	action: "disable" | "enable",
+): Promise<PaystackSubscriptionRow & { subscription_code: string; email_token: string }> {
+	const row = await subscriptionForPlan(ctx, client, planCode);
+	try {
+		await call(ctx, {
+			client,
+			path: `/subscription/${action}`,
+			body: { code: row.subscription_code, token: row.email_token },
+		});
+	} catch (err) {
+		if (
+			err instanceof PaystackApiError &&
+			err.status >= 400 &&
+			err.status < 500 &&
+			err.status !== 401 &&
+			err.status !== 403
+		) {
+			const verb = action === "disable" ? "cancel" : "resume";
+			throw new SubscriptionActionRefusedError(
+				`Paystack refused to ${verb} this subscription: ${err.message}`,
+			);
+		}
+		throw err;
+	}
 	return row;
 }
 
@@ -1437,12 +1479,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		credentials: PaymentProviderCredentials,
 	): Promise<ProviderSubscriptionInfo> {
 		const client = toPaystackClient(credentials);
-		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
-		await call(ctx, {
-			client,
-			path: "/subscription/disable",
-			body: { code: row.subscription_code, token: row.email_token },
-		});
+		const row = await subscriptionAction(ctx, client, input.providerSubscriptionId, "disable");
 		const paidUntil = isoDate(row.next_payment_date);
 		return {
 			...subscriptionInfo(input.providerSubscriptionId, row),
@@ -1458,12 +1495,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		credentials: PaymentProviderCredentials,
 	): Promise<ProviderSubscriptionInfo> {
 		const client = toPaystackClient(credentials);
-		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
-		await call(ctx, {
-			client,
-			path: "/subscription/enable",
-			body: { code: row.subscription_code, token: row.email_token },
-		});
+		const row = await subscriptionAction(ctx, client, input.providerSubscriptionId, "enable");
 		return {
 			...subscriptionInfo(input.providerSubscriptionId, row),
 			status: "active",

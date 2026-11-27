@@ -151,6 +151,12 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 				(r) => r.subscription_code === body.code && r.email_token === body.token,
 			);
 			if (!row) return json({ status: false, message: "Subscription not found" }, 404);
+			if (action === "disable" && row.status !== "active") {
+				return json(
+					{ status: false, message: "Subscription with code not found or already inactive" },
+					400,
+				);
+			}
 			row.status = action === "disable" ? "non-renewing" : "active";
 			return json({ status: true, message: `Subscription ${action}d successfully` });
 		}
@@ -1518,6 +1524,32 @@ describe("@dashcommerce/paystack subscriptions through core", () => {
 			status: "active",
 			cancelAtPeriodEnd: false,
 		});
+	});
+
+	it("answers 409 with Paystack's reason when Paystack refuses to cancel", async () => {
+		const { paystack, ctx, getCol } = await subscribed("sess_sub_refused");
+		const sub = Array.from(getCol("subscriptions").values())[0] as { id: string };
+		const paystackSub = paystack.subscriptions[0];
+		if (!paystackSub) throw new Error("Paystack has no subscription");
+		// Already cancelled in the Paystack dashboard: Paystack refuses a second disable.
+		paystackSub.status = "non-renewing";
+
+		const res = (await sandbox.routes["admin/subscriptions/action"].handler(
+			{
+				request: new Request(`http://test/admin/subscriptions/action?id=${sub.id}&action=cancel`, {
+					method: "POST",
+				}),
+				input: {},
+				user: ADMIN_USER,
+			} as unknown as import("emdash").RouteContext,
+			ctx,
+		)) as Response;
+		expect(res.status).toBe(409);
+		expect(await res.json()).toMatchObject({
+			code: "subscription_action_refused",
+			error: expect.stringContaining("Paystack refused to cancel this subscription"),
+		});
+		expect(getCol("subscriptions").get(sub.id)).toMatchObject({ cancelAtPeriodEnd: false });
 	});
 
 	it("marks the subscription past due on invoice.payment_failed and cancelled on subscription.disable", async () => {
