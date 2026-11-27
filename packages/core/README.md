@@ -220,6 +220,16 @@ React pages served at `/_emdash/admin/plugins/dashcommerce/*`:
 - Settings (all `settings:*` keys with per-key validation)
 - Dashboard widgets: Revenue, Low Stock, Recent Orders, Pending Reviews, Failed Renewals
 
+Refunds and payment settings are for EmDash Admins only. EmDash already sends every DashCommerce admin route through its `plugins:manage` permission, which only Admins hold, so Editors and below get a 403 from EmDash before DashCommerce runs. DashCommerce checks the caller's role (`ctx.user.role`) again on the money routes, so they stay admin-only if other admin routes are later opened to Editors:
+
+- `POST /admin/orders/refund` — 403 "Only an admin can issue refunds."
+- `POST /admin/settings` with the payment provider, checkout mode, Stripe keys or a provider's keys — 403 "Only an admin can change payment settings." Other settings save as before.
+- `POST /admin/stripe/ping` and `POST /admin/payments/check-connection` — admin-only, since only an admin can set the keys they test.
+- `POST /admin/subscriptions/action` (cancel, resume) — 403 "Only an admin can change a subscription."
+- Vendor payout changes: `POST`/`PATCH /admin/vendors/item`, `/admin/vendors/onboard-link`, `/admin/vendors/payout-account` and its `/resolve` — 403 "Only an admin can manage vendor payouts." Listing vendors stays open.
+
+A call with no signed-in user is refused. The order detail and settings responses carry `canRefund` and `_canManagePayments`, so the admin shows non-admins a short note instead of the refund form and greys out the payment cards.
+
 The admin follows the EmDash admin's light or dark mode: its colours come from EmDash's theme tokens, with light fallbacks for hosts without them. It uses CSS `color-mix()`, so it needs a browser from 2023 or later (Chrome 111, Safari 16.2, Firefox 113).
 
 To restyle it, set any of these CSS variables in your admin: `--dc-card-bg`, `--dc-card-fg`, `--dc-text-muted`, `--dc-text-subtle`, `--dc-label`, `--dc-input-bg`, `--dc-input-fg`, `--dc-border`, `--dc-hairline`. Status badges, destructive buttons, dialog backdrops and shadows use fixed colours that read the same in both modes.

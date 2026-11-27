@@ -7,7 +7,7 @@ import {
 } from "../src/payment-provider";
 import { adminApiRoutes } from "../src/routes/admin-api";
 import type { Vendor } from "../src/types";
-import { makeRouteContext } from "./helpers/route-harness";
+import { ADMIN_USER, makeRouteContext } from "./helpers/route-harness";
 
 afterEach(() => resetPaymentProviders());
 
@@ -45,6 +45,7 @@ async function call(
 	const routeCtx = {
 		request: new Request(url, { method }),
 		input,
+		user: ADMIN_USER,
 	} as unknown as RouteContext;
 	const res = (await adminApiRoutes[route].handler(routeCtx, ctx)) as Response;
 	return { status: res.status, body: (await res.json()) as Record<string, unknown> };

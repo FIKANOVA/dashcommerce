@@ -81,6 +81,8 @@ interface OrderDetail {
 	order: Order;
 	items: OrderItem[];
 	refunds: Refund[];
+	/** False for non-admins. Absent from older servers: treat as allowed. */
+	canRefund?: boolean;
 }
 
 export function OrderDetailPage() {
@@ -130,7 +132,7 @@ export function OrderDetailPage() {
 		);
 	}
 
-	const { order, items, refunds } = data;
+	const { order, items, refunds, canRefund } = data;
 
 	return (
 		<div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -139,7 +141,15 @@ export function OrderDetailPage() {
 			<DisputeCard order={order} />
 			<ItemsCard items={items} />
 			<SplitSettlementCard order={order} />
-			<RefundCard order={order} items={items} onRefunded={reload} />
+			{canRefund === false ? (
+				<Card title="Issue refund">
+					<Alert type="info" title="Admins only">
+						Only an admin can issue refunds.
+					</Alert>
+				</Card>
+			) : (
+				<RefundCard order={order} items={items} onRefunded={reload} />
+			)}
 			<RefundHistoryCard refunds={refunds} />
 		</div>
 	);
