@@ -2348,6 +2348,7 @@ export const adminApiRoutes = {
 	"admin/subscriptions/action": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can change a subscription.");
 			const url = new URL(routeCtx.request.url);
 			const input = (routeCtx.input ?? {}) as {
 				id?: string;
@@ -2395,6 +2396,7 @@ export const adminApiRoutes = {
 	"admin/vendors/onboard-link": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can manage vendor payouts.");
 			if (!(await requireConnectEnabled(ctx))) return connectOffResponse();
 			return postVendorOnboardLink(ctx, routeCtx);
 		},
@@ -2402,6 +2404,10 @@ export const adminApiRoutes = {
 	"admin/vendors/item": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
+			const writes = routeCtx.request.method === "POST" || routeCtx.request.method === "PATCH";
+			if (writes && !isAdmin(routeCtx)) {
+				return adminOnly("Only an admin can manage vendor payouts.");
+			}
 			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
 			if (routeCtx.request.method === "POST") {
 				return createVendor(ctx, routeCtx);
@@ -2424,6 +2430,7 @@ export const adminApiRoutes = {
 	"admin/vendors/payout-account/resolve": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can manage vendor payouts.");
 			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
 			if (routeCtx.request.method !== "POST") {
 				return json({ error: "Method not allowed" }, 405);
@@ -2434,6 +2441,7 @@ export const adminApiRoutes = {
 	"admin/vendors/payout-account": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
 			const ctx = getCtx(routeCtx, _c);
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can manage vendor payouts.");
 			if (!(await requireVendorRoutesEnabled(ctx))) return vendorRoutesOffResponse();
 			if (routeCtx.request.method !== "POST") {
 				return json({ error: "Method not allowed" }, 405);

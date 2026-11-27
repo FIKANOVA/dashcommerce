@@ -225,6 +225,8 @@ Refunds and payment settings are for EmDash Admins only. EmDash already sends ev
 - `POST /admin/orders/refund` — 403 "Only an admin can issue refunds."
 - `POST /admin/settings` with the payment provider, checkout mode, Stripe keys or a provider's keys — 403 "Only an admin can change payment settings." Other settings save as before.
 - `POST /admin/stripe/ping` and `POST /admin/payments/check-connection` — admin-only, since only an admin can set the keys they test.
+- `POST /admin/subscriptions/action` (cancel, resume) — 403 "Only an admin can change a subscription."
+- Vendor payout changes: `POST`/`PATCH /admin/vendors/item`, `/admin/vendors/onboard-link`, `/admin/vendors/payout-account` and its `/resolve` — 403 "Only an admin can manage vendor payouts." Listing vendors stays open.
 
 A call with no signed-in user is refused. The order detail and settings responses carry `canRefund` and `_canManagePayments`, so the admin shows non-admins a short note instead of the refund form and greys out the payment cards.
 

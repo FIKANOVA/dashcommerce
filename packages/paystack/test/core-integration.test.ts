@@ -19,6 +19,15 @@ import sandbox from "@dashcommerce/core/sandbox";
 import { registerPaystackProvider } from "../src/index";
 import { paystackPaymentProvider } from "../src/provider";
 
+/** A signed-in EmDash Admin (role 50): refunds and payment settings are admin-only. */
+const ADMIN_USER = {
+	id: "user_admin",
+	email: "admin@example.com",
+	name: "Admin",
+	role: 50,
+	createdAt: "2026-01-01T00:00:00.000Z",
+};
+
 const SECRET_KEY = "sk_test_1234567890abcdef";
 
 async function sign(secret: string, payload: string): Promise<string> {
@@ -808,6 +817,7 @@ async function paidOrderWithPendingRefund(session: string) {
 		{
 			request: new Request(`http://test/admin/orders/refund?id=${order.id}`, { method: "POST" }),
 			input: { amount: 50000, currency: "KES" },
+			user: ADMIN_USER,
 		} as unknown as import("emdash").RouteContext,
 		ctx,
 	)) as Response;
@@ -828,6 +838,7 @@ describe("@dashcommerce/paystack with core enablement", () => {
 				paystackSecretKey: "rk_test_1234567890abcdef",
 				paystackWebhookSecret: WHSEC,
 			},
+			user: ADMIN_USER,
 		} as unknown as import("emdash").RouteContext;
 		const res = (await sandbox.routes["admin/settings"].handler(routeCtx, ctx)) as Response;
 		expect(res.status).toBe(200);
@@ -837,6 +848,7 @@ describe("@dashcommerce/paystack with core enablement", () => {
 			{
 				request: new Request("http://test/admin/settings", { method: "POST" }),
 				input: { paystackSecretKey: "pk_test_public_key" },
+				user: ADMIN_USER,
 			} as unknown as import("emdash").RouteContext,
 			ctx,
 		)) as Response;
@@ -1397,6 +1409,7 @@ describe("@dashcommerce/paystack subscriptions through core", () => {
 						{ method: "POST" },
 					),
 					input: {},
+					user: ADMIN_USER,
 				} as unknown as import("emdash").RouteContext,
 				ctx,
 			)) as Response;

@@ -230,3 +230,65 @@ describe("payment settings are admin-only", () => {
 		expect(asAdmin).toEqual({ status: 200, body: { ok: true, message: "Connected" } });
 	});
 });
+
+describe("subscription and vendor payout changes are admin-only", () => {
+	const writes: Array<
+		[RouteName, string, { method?: string; query?: string; input?: Record<string, unknown> }]
+	> = [
+		[
+			"admin/subscriptions/action",
+			"Only an admin can change a subscription.",
+			{ input: { id: "sub_1", action: "cancel" } },
+		],
+		[
+			"admin/vendors/onboard-link",
+			"Only an admin can manage vendor payouts.",
+			{ input: { id: "v_1" } },
+		],
+		[
+			"admin/vendors/payout-account",
+			"Only an admin can manage vendor payouts.",
+			{ input: { vendorId: "v_1" } },
+		],
+		[
+			"admin/vendors/payout-account/resolve",
+			"Only an admin can manage vendor payouts.",
+			{ input: { accountNumber: "0" } },
+		],
+		[
+			"admin/vendors/item",
+			"Only an admin can manage vendor payouts.",
+			{ input: { name: "Vendor" } },
+		],
+		[
+			"admin/vendors/item",
+			"Only an admin can manage vendor payouts.",
+			{ method: "PATCH", query: "?id=v_1", input: { name: "Vendor" } },
+		],
+	];
+
+	for (const [route, message, opts] of writes) {
+		for (const [who, user] of [
+			["an editor", EDITOR_USER],
+			["a call with no user", undefined],
+		] as const) {
+			it(`refuses ${who} on ${opts.method ?? "POST"} ${route}`, async () => {
+				const { ctx, kvStore } = await paidOrder();
+				await ctx.kv.set("settings:connectEnabled", true);
+				await ctx.kv.set("settings:vendorRoutesEnabled", true);
+				const before = new Map(kvStore);
+				const res = await call(ctx, route, user, opts);
+				expect(res).toEqual({ status: 403, body: { error: { code: "ADMIN_ONLY", message } } });
+				expect(new Map(kvStore)).toEqual(before);
+			});
+		}
+	}
+
+	it("lets an admin past the role check", async () => {
+		const { ctx } = await paidOrder();
+		const res = await call(ctx, "admin/subscriptions/action", ADMIN_USER, {
+			input: { id: "sub_missing", action: "cancel" },
+		});
+		expect(res.status).not.toBe(403);
+	});
+});
