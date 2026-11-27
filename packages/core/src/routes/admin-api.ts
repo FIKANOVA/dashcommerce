@@ -1003,13 +1003,14 @@ export const PICKUP_FIELD_LIMITS = {
 } as const;
 
 /**
- * Pickup details are plain text shown to shoppers. Drop markup and control
- * characters, keep line breaks, trim, and refuse anything over its limit.
+ * Pickup details are plain text shown to shoppers. Drop control characters,
+ * keep line breaks, trim, and refuse anything over its limit. Angle brackets
+ * are kept as typed ("Gate <B>", "<5 min walk"): every place that shows the
+ * text escapes it (receipt email, checkout, admin).
  */
 function plainText(value: string): string {
 	return value
 		.replace(/\r\n?/g, "\n")
-		.replace(/<[^>]*>/g, "")
 		.replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, "")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();

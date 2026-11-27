@@ -146,7 +146,7 @@ async function cartWithMethod(ctx: PluginContext, sessionId: string, methodId: s
 }
 
 describe("pickup details on the shipping method", () => {
-	it("saves and returns them, as plain text", async () => {
+	it("saves and returns them, without control characters", async () => {
 		const { ctx } = await shop();
 		const res = await addMethod(ctx, {
 			title: "Store pickup",
@@ -164,12 +164,29 @@ describe("pickup details on the shipping method", () => {
 		const saved = (res.body.method as ShippingMethod).config;
 		expect(saved).toEqual({
 			type: "local_pickup",
-			pickup: { location: pickupDetails.location, instructions: "Ask at the front desk." },
+			pickup: { location: pickupDetails.location, instructions: "<b>Ask</b> at the front desk." },
 		});
 
 		const listed = await call(ctx, "admin/shipping");
 		const methods = listed.body.methods as ShippingMethod[];
 		expect(methods[0]?.config).toEqual(saved);
+	});
+
+	it("keeps text between angle brackets", async () => {
+		const { ctx } = await shop();
+		const res = await addMethod(ctx, {
+			title: "Store pickup",
+			type: "local_pickup",
+			config: {
+				type: "local_pickup",
+				pickup: { location: "Gate <B>, Example Plaza", instructions: "<5 min walk> from the stage" },
+			},
+		});
+		expect(res.status).toBe(201);
+		expect((res.body.method as ShippingMethod).config).toEqual({
+			type: "local_pickup",
+			pickup: { location: "Gate <B>, Example Plaza", instructions: "<5 min walk> from the stage" },
+		});
 	});
 
 	it("refuses text over the limit or that isn't text", async () => {
