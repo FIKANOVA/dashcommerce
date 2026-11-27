@@ -25,3 +25,31 @@ export function isCurrencyNotSupportedError(err: unknown): err is CurrencyNotSup
 		typeof (err as { currency?: unknown }).currency === "string"
 	);
 }
+
+/**
+ * Thrown when the payment provider (or core, for a provider without the
+ * feature) refuses a subscription action such as cancel or resume, for
+ * example because the subscription is already inactive there. The admin
+ * route answers with a 409 and this message, not a 500.
+ *
+ * Recognised by `code`, as {@link CurrencyNotSupportedError} is.
+ */
+export class SubscriptionActionRefusedError extends Error {
+	readonly code = "subscription_action_refused";
+
+	constructor(message: string) {
+		super(message);
+		this.name = "SubscriptionActionRefusedError";
+	}
+}
+
+/** True for a {@link SubscriptionActionRefusedError}, from any copy of core. */
+export function isSubscriptionActionRefusedError(
+	err: unknown,
+): err is SubscriptionActionRefusedError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "subscription_action_refused"
+	);
+}

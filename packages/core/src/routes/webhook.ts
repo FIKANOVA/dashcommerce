@@ -65,8 +65,10 @@ import { handleInvoicePaymentFailed } from "../subscriptions/dunning";
 import {
 	addSubscriptionInterval,
 	findProviderSubscription,
+	findProviderSubscriptionByRef,
 	providerSubsStore,
 	recordProviderSubscriptionInvoice,
+	rememberProviderSubscriptionRef,
 	upsertProviderSubscription,
 } from "../subscriptions/provider";
 import type { CartState, StripeEventRecord } from "../types";
@@ -77,6 +79,7 @@ import type {
 	Customer,
 	Order,
 	OrderProviderSplit,
+	Subscription,
 	Vendor,
 } from "../types";
 import { randomId } from "../util/ids";
@@ -1023,6 +1026,25 @@ async function handleNormalizedChargeFailed(
 	});
 }
 
+/**
+ * The local subscription a `subscription.updated` event is about: by the id
+ * core stores, else by the provider's own id learnt from an earlier event
+ * (a failed Paystack renewal names only the `SUB_…` code, not the plan).
+ */
+async function findSubscriptionForEvent(
+	ctx: PluginContext,
+	providerId: string,
+	event: Extract<NormalizedPaymentEvent, { type: "subscription.updated" }>,
+): Promise<Subscription | null> {
+	const { providerSubscriptionId: id, providerSubscriptionRef: ref } = event;
+	if (id && ref) await rememberProviderSubscriptionRef(ctx, providerId, ref, id);
+	if (id) {
+		const sub = await findProviderSubscription(ctx, providerId, id);
+		if (sub) return sub;
+	}
+	return ref ? findProviderSubscriptionByRef(ctx, providerId, ref) : null;
+}
+
 async function handleDisputeEvent(
 	ctx: PluginContext,
 	provider: PaymentProvider,
@@ -1166,11 +1188,7 @@ export const webhookRoutes = {
 								{ status: 400, headers: { "Content-Type": "application/json" } },
 							);
 						}
-						const sub = await findProviderSubscription(
-							ctx,
-							provider.id,
-							normalized.providerSubscriptionId,
-						);
+						const sub = await findSubscriptionForEvent(ctx, provider.id, normalized);
 						if (!sub) {
 							return new Response(JSON.stringify({ received: true, orphan: true }), {
 								status: 200,

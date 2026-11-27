@@ -347,6 +347,49 @@ export async function recordLostDispute(
 	return refund;
 }
 
+/**
+ * Undo `recordLostDispute` when a lost dispute later turns won: the refund
+ * row stays, marked failed so it no longer counts, and the order's refunded
+ * total and statuses are worked out again (as for a refund the provider
+ * failed). Returns false when there was nothing counted to undo.
+ */
+export async function reverseLostDispute(
+	ctx: PluginContext,
+	order: Order,
+	dispute: { providerId: string; providerDisputeId: string },
+): Promise<boolean> {
+	const key = `dispute:${dispute.providerId}:${dispute.providerDisputeId}`;
+	const row = (await refundsStore(ctx).query({ where: { stripeRefundId: key }, limit: 1 }))
+		.items[0];
+	if (!row) return false;
+	const refund = { ...(row.data as Refund), id: row.id };
+	// The order records which dispute refunds it has stopped counting, in the
+	// same write as its new totals. A retry after a failure between the two
+	// writes below then neither skips nor repeats the subtraction.
+	const reversed = reversedDisputeKeys(order);
+	if (!reversed.includes(key)) {
+		if (refund.status !== "succeeded") return false;
+		await reverseFailedRefund(
+			ctx,
+			{ ...order, metadata: { ...order.metadata, reversedDisputeRefunds: [...reversed, key] } },
+			refund,
+		);
+	}
+	if (refund.status === "succeeded") {
+		await refundsStore(ctx).put(refund.id, {
+			...refund,
+			status: "failed",
+			reason: "Dispute lost, then won: no longer counted",
+		});
+	}
+	return true;
+}
+
+function reversedDisputeKeys(order: Order): string[] {
+	const keys = order.metadata?.reversedDisputeRefunds;
+	return Array.isArray(keys) ? keys.filter((k): k is string => typeof k === "string") : [];
+}
+
 export type ProviderRefundUpdateOutcome ="updated" | "unchanged" | "unknown" | "other-provider";
 
 /**

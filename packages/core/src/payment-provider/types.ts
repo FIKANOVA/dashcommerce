@@ -267,7 +267,19 @@ export type NormalizedPaymentEvent =
 			type: "subscription.updated";
 			providerId: string;
 			providerEventId: string;
-			providerSubscriptionId: string;
+			/**
+			 * The id core stores (`ProviderSubscriptionInfo.providerSubscriptionId`).
+			 * May be missing when the event only names the provider's own
+			 * subscription id; then `providerSubscriptionRef` must be set.
+			 */
+			providerSubscriptionId?: string;
+			/**
+			 * The provider's own id for the subscription, when it differs from
+			 * `providerSubscriptionId` (Paystack: the `SUB_…` code, where core
+			 * stores the plan code). Core remembers it whenever an event carries
+			 * both, and matches later events that carry only this one.
+			 */
+			providerSubscriptionRef?: string;
 			status: ProviderSubscriptionInfo["status"];
 			currentPeriodStart?: string;
 			currentPeriodEnd?: string;

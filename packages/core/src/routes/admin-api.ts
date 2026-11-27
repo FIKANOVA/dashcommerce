@@ -52,6 +52,7 @@ import {
 import { normalizeCurrencyList } from "../data/currencies";
 import {
 	getPaymentProvider,
+	isSubscriptionActionRefusedError,
 	listPaymentProviders,
 	loadPaymentProviderCredentials,
 	providerCheckoutStyles,
@@ -1319,6 +1320,11 @@ async function postSubscriptionAction(
 		}
 		return json({ error: `Unknown action ${action}` }, 400);
 	} catch (err) {
+		// The provider said no (already inactive, not supported): nothing
+		// broke, so tell the admin why instead of answering 500.
+		if (isSubscriptionActionRefusedError(err)) {
+			return json({ error: err.message, code: err.code }, 409);
+		}
 		return json(
 			{ error: err instanceof Error ? err.message : "Action failed" },
 			500,

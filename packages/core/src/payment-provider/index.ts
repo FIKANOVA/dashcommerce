@@ -14,7 +14,12 @@ export type {
 	ProviderCredentialName,
 	ProviderCredentialSetting,
 } from "./credentials";
-export { CurrencyNotSupportedError, isCurrencyNotSupportedError } from "./errors";
+export {
+	CurrencyNotSupportedError,
+	SubscriptionActionRefusedError,
+	isCurrencyNotSupportedError,
+	isSubscriptionActionRefusedError,
+} from "./errors";
 export { createMockPaymentProvider } from "./mock-provider";
 export type { MockPaymentProviderOptions } from "./mock-provider";
 export {

@@ -11,6 +11,7 @@
 import type { PluginContext } from "emdash";
 import {
 	type ProviderSubscriptionInfo,
+	SubscriptionActionRefusedError,
 	loadPaymentProviderCredentials,
 	requirePaymentProvider,
 } from "../payment-provider";
@@ -71,7 +72,9 @@ export interface PauseInput {
 export async function pause(ctx: PluginContext, input: PauseInput): Promise<StripeSubscription> {
 	const local = await loadLocal(ctx, input.subscriptionId);
 	if (isProviderManaged(local)) {
-		throw new Error(`${local.providerId} does not support pausing subscriptions`);
+		throw new SubscriptionActionRefusedError(
+			`${local.providerId} does not support pausing subscriptions`,
+		);
 	}
 	const client = requireStripeClient(input.client);
 	const idemKey = `sub-pause:${local.stripeSubscriptionId}:${input.resumesAt ?? "open"}`;
@@ -129,7 +132,9 @@ export async function changePlan(
 ): Promise<StripeSubscription> {
 	const local = await loadLocal(ctx, input.subscriptionId);
 	if (isProviderManaged(local)) {
-		throw new Error(`${local.providerId} does not support changing plans in place`);
+		throw new SubscriptionActionRefusedError(
+			`${local.providerId} does not support changing plans in place`,
+		);
 	}
 	const client = requireStripeClient(input.client);
 	const idemKey = `sub-change:${local.stripeSubscriptionId}:${input.newPriceId}`;
@@ -167,7 +172,9 @@ async function providerCancel(
 ): Promise<ProviderSubscriptionInfo> {
 	const provider = requirePaymentProvider(local.providerId ?? "");
 	if (!provider.cancelSubscription) {
-		throw new Error(`${provider.label} does not support cancelling subscriptions`);
+		throw new SubscriptionActionRefusedError(
+			`${provider.label} does not support cancelling subscriptions`,
+		);
 	}
 	const creds = await loadPaymentProviderCredentials(ctx.kv, provider.id);
 	if (!creds) throw new Error(`Payment provider "${provider.id}" is not configured`);
@@ -187,7 +194,9 @@ async function providerResume(
 ): Promise<ProviderSubscriptionInfo> {
 	const provider = requirePaymentProvider(local.providerId ?? "");
 	if (!provider.resumeSubscription) {
-		throw new Error(`${provider.label} does not support resuming subscriptions`);
+		throw new SubscriptionActionRefusedError(
+			`${provider.label} does not support resuming subscriptions`,
+		);
 	}
 	const creds = await loadPaymentProviderCredentials(ctx.kv, provider.id);
 	if (!creds) throw new Error(`Payment provider "${provider.id}" is not configured`);

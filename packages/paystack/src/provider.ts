@@ -30,7 +30,10 @@ import type {
 	VerifyWebhookInput,
 	VerifyWebhookResult,
 } from "@dashcommerce/core/payment-provider";
-import { CurrencyNotSupportedError } from "@dashcommerce/core/payment-provider";
+import {
+	CurrencyNotSupportedError,
+	SubscriptionActionRefusedError,
+} from "@dashcommerce/core/payment-provider";
 import { PaystackApiError, type PaystackClientOptions, call, callEnvelope } from "./client";
 import { PAYSTACK_LOGO } from "./logo";
 import { verifyPaystackSignature } from "./webhook-verify";
@@ -767,7 +770,46 @@ async function subscriptionForPlan(
 		)
 		.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 	const row = usable[0];
-	if (!row) throw new Error(`Paystack has no subscription on plan ${planCode}`);
+	if (!row) {
+		throw new SubscriptionActionRefusedError(`Paystack has no subscription on plan ${planCode}`);
+	}
+	return row;
+}
+
+/**
+ * Disable or enable the subscription on a plan. Paystack answers a request it
+ * won't do (already inactive, unknown code) with a 4xx: that is a refusal,
+ * not a fault, so core shows the admin Paystack's reason instead of a 500.
+ * Bad keys (401/403) and Paystack outages still throw as they are.
+ */
+async function subscriptionAction(
+	ctx: PaymentProviderRuntimeContext,
+	client: PaystackClientOptions,
+	planCode: string,
+	action: "disable" | "enable",
+): Promise<PaystackSubscriptionRow & { subscription_code: string; email_token: string }> {
+	const row = await subscriptionForPlan(ctx, client, planCode);
+	try {
+		await call(ctx, {
+			client,
+			path: `/subscription/${action}`,
+			body: { code: row.subscription_code, token: row.email_token },
+		});
+	} catch (err) {
+		if (
+			err instanceof PaystackApiError &&
+			err.status >= 400 &&
+			err.status < 500 &&
+			err.status !== 401 &&
+			err.status !== 403
+		) {
+			const verb = action === "disable" ? "cancel" : "resume";
+			throw new SubscriptionActionRefusedError(
+				`Paystack refused to ${verb} this subscription: ${err.message}`,
+			);
+		}
+		throw err;
+	}
 	return row;
 }
 
@@ -825,9 +867,39 @@ interface PaystackSubscriptionWebhookData {
 }
 
 /**
- * A subscription's new state, keyed by its plan code. Subscription events
- * carry `data.plan`; invoice events carry `data.subscription`, and the plan
- * is read from either. Without a plan code or a subscription code the event
+ * A short, stable fingerprint of a webhook's `data`. Paystack sends no event
+ * id, and the event name plus subscription code repeats: cancel, resume and
+ * cancel again sends `subscription.not_renew` for the same code twice. Any
+ * field that differs between the two (next payment date, status, open
+ * invoice, timestamps) changes this, while a redelivery of the same event
+ * keeps it. Keys are sorted so the fingerprint does not depend on order.
+ */
+function dataFingerprint(data: unknown): string {
+	const stable = (value: unknown): string => {
+		if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+		if (value && typeof value === "object") {
+			const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+				a < b ? -1 : a > b ? 1 : 0,
+			);
+			return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
+		}
+		return JSON.stringify(value) ?? "null";
+	};
+	// FNV-1a, 32-bit: enough to tell one delivery's payload from another's.
+	let hash = 0x811c9dc5;
+	for (const char of stable(data)) {
+		hash ^= char.charCodeAt(0);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * A subscription's new state. Core stores the plan code as the subscription
+ * id; Paystack's own `SUB_…` code goes along as `providerSubscriptionRef`.
+ * Subscription events carry `data.plan`, so core learns the code from them;
+ * invoice events carry `data.subscription`, often without a plan, and core
+ * matches them by the code it learnt. Without a subscription code the event
  * is left unhandled rather than matched by guesswork.
  */
 function subscriptionEvent(
@@ -838,7 +910,7 @@ function subscriptionEvent(
 	const mapped = SUBSCRIPTION_EVENT_STATUS[eventName];
 	const planCode = planCodeOf(data?.plan, data?.subscription?.plan);
 	const subscriptionCode = data?.subscription_code ?? data?.subscription?.subscription_code;
-	if (!mapped || !planCode || typeof subscriptionCode !== "string" || subscriptionCode === "") {
+	if (!mapped || typeof subscriptionCode !== "string" || subscriptionCode === "") {
 		return { type: "unhandled", providerEventType: eventName, raw };
 	}
 	const invoice =
@@ -846,9 +918,11 @@ function subscriptionEvent(
 	return {
 		type: "subscription.updated",
 		providerId: "paystack",
-		// Paystack sends no event id; the event, subscription and invoice stand in.
-		providerEventId: `${eventName}:${subscriptionCode}${invoice}`,
-		providerSubscriptionId: planCode,
+		// Paystack sends no event id; the event, subscription, invoice and a
+		// fingerprint of the payload stand in (see `dataFingerprint`).
+		providerEventId: `${eventName}:${subscriptionCode}${invoice}:${dataFingerprint(data)}`,
+		...(planCode ? { providerSubscriptionId: planCode } : {}),
+		providerSubscriptionRef: subscriptionCode,
 		status: mapped.status,
 		...(mapped.cancelAtPeriodEnd !== undefined
 			? { cancelAtPeriodEnd: mapped.cancelAtPeriodEnd }
@@ -1437,12 +1511,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		credentials: PaymentProviderCredentials,
 	): Promise<ProviderSubscriptionInfo> {
 		const client = toPaystackClient(credentials);
-		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
-		await call(ctx, {
-			client,
-			path: "/subscription/disable",
-			body: { code: row.subscription_code, token: row.email_token },
-		});
+		const row = await subscriptionAction(ctx, client, input.providerSubscriptionId, "disable");
 		const paidUntil = isoDate(row.next_payment_date);
 		return {
 			...subscriptionInfo(input.providerSubscriptionId, row),
@@ -1458,12 +1527,7 @@ export const paystackPaymentProvider: PaymentProvider = {
 		credentials: PaymentProviderCredentials,
 	): Promise<ProviderSubscriptionInfo> {
 		const client = toPaystackClient(credentials);
-		const row = await subscriptionForPlan(ctx, client, input.providerSubscriptionId);
-		await call(ctx, {
-			client,
-			path: "/subscription/enable",
-			body: { code: row.subscription_code, token: row.email_token },
-		});
+		const row = await subscriptionAction(ctx, client, input.providerSubscriptionId, "enable");
 		return {
 			...subscriptionInfo(input.providerSubscriptionId, row),
 			status: "active",

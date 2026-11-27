@@ -24,6 +24,7 @@ export {
 	composeAbandonedCart,
 } from "./abandoned-cart";
 export { composeDisputeAlert, sendDisputeAlert } from "./dispute";
+export type { DisputedPayment, DisputedRenewal } from "./dispute";
 export { composeDunning } from "./dunning";
 export type { ComposedEmail } from "./receipt";
 export { composeOrderReceipt, sendOrderReceipt } from "./receipt";
