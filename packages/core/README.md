@@ -127,7 +127,7 @@ POST   /cart/currency                     Switch currency (empty cart only)
 POST   /cart/coupon                       Apply coupon
 DELETE /cart/coupon/remove?code={code}    Remove coupon
 POST   /cart/shipping-location            Set country + region + postal (hosted checkout pre-flight)
-GET    /cart/shipping-regions             Regions the shipping zones name, by country
+GET    /cart/shipping-regions             Regions the shipping zones name, by country, and postcode countries
 POST   /cart/shipping-address             Full address (embedded checkout)
 POST   /cart/contact                      Email + billing address
 POST   /cart/shipping-methods             List rates for current ship-to
@@ -152,6 +152,22 @@ GET    /config-check                      Read-only health check (Stripe keys pr
 Regions are ISO 3166-2 subdivision parts (`30` for Nairobi City). `cart/shipping-location`, `cart/shipping-address` and `cart/contact` take `KE-30` as `30` and a county or state name the shop knows ("Nairobi") as its code. In a country where a shipping zone names regions, a region the zones don't name is kept only if it is a real region (Mombasa stays `28`, priced as elsewhere); anything else is stored as no region, which gets the country-wide rate. Table tax rates match regions the same way, so a rate saved as "Nairobi" still applies to `30`. After a hosted Stripe payment the order keeps the cart's region rather than Stripe's free-text state.
 
 A shopper's new checkout attempt replaces their earlier one, so it can't be paid as well: `checkout/create-intent` cancels the earlier PaymentIntent, and on hosted Stripe Checkout `checkout/create-session` expires the earlier Checkout Session (both recorded on the shopper's stock hold; the last hosted session is also kept for 24 hours in its own pointer, since Stripe keeps it payable that long after the 15-minute hold ends). If Stripe won't, because the earlier payment succeeded or is still settling, the new attempt gets 409 `earlier_payment_processing`. A replaced attempt still paid later becomes an on-hold order with `metadata.duplicateOfOrderId`, for the merchant to refund.
+
+### Shipping zones
+
+A zone lists the places it delivers to, and its methods give the rates. Each location is a country, optionally narrowed to some of its regions, some of its postcodes, or both:
+
+```json
+{ "name": "Lisbon", "locations": [{ "country": "PT", "postcodes": ["1000-1999", "2600"] }] }
+```
+
+- A location with neither regions nor postcodes covers the whole country.
+- A postcode entry is a prefix (`00100`, `SW1`, or `SW1*`) or an inclusive range of digits with ends of the same length (`1000-1999`). A range compares the postcode's first digits, as many as its ends have, so `1100-148` falls in `1000-1999`. A hyphen between digit groups of different lengths is part of a postcode, not a range: `1000-001` is matched as a prefix.
+- Postcodes compare without case or spaces, like table tax rates: `sw1a 1aa` matches `SW1`. The admin route stores entries that way and refuses a malformed entry or a range that starts after it ends with a 400.
+- A location with postcodes matches only an address whose postcode matches one entry, and its region too when it lists both. An address without a postcode gets the zone that covers the rest of the country.
+- Zones are tried by `order`, lowest first. Among matching zones with the same order, a postcode match beats a region match, which beats a country-wide zone, so a "Lisbon" zone works next to a "Portugal" zone on the default order.
+
+`cart/shipping-regions` also returns `postcodes`, the countries where a zone lists postcodes. Hosted checkout requires the postcode for those countries only, and fetches the rates again when the shopper changes it; elsewhere the postcode stays optional. `cart/shipping-location` refuses a postcode longer than 16 characters or with anything but letters, digits, spaces and hyphens. `checkout/create-session` and `checkout/create-intent` re-quote shipping with the same matching before taking payment.
 
 ### Admin-gated routes
 
