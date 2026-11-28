@@ -388,13 +388,22 @@ function nameKey(value: string): string {
  * knows ("Nairobi", "nairobi city") becomes its code. Anything else comes
  * back trimmed, as given.
  */
+/**
+ * Codes ISO 3166-2 has since replaced, mapped to the current ones, so data
+ * saved with an older code still matches (India's 2023 update).
+ */
+const REGION_ALIASES: Record<string, Record<string, string>> = {
+	IN: { UT: "UK", CT: "CG", TG: "TS", OR: "OD", DD: "DH", DN: "DH" },
+};
+
 export function regionCode(country: string, value: string): string {
 	const cc = country.trim().toUpperCase();
 	let region = value.trim();
 	if (cc && region.toUpperCase().startsWith(`${cc}-`)) region = region.slice(cc.length + 1).trim();
 	const known = REGION_TABLE[cc]?.regions;
 	if (!known || region === "") return region;
-	const byCode = known.find((r) => r.code === region.toUpperCase());
+	const upper = REGION_ALIASES[cc]?.[region.toUpperCase()] ?? region.toUpperCase();
+	const byCode = known.find((r) => r.code === upper);
 	if (byCode) return byCode.code;
 	const key = nameKey(region);
 	if (!key) return region;

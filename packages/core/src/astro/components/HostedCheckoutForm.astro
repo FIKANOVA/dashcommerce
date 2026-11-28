@@ -627,7 +627,7 @@ const payHint = onPage
     const list = [...(region ? (choice.regions[region] ?? []) : []), ...choice.country];
     const seen = new Set<string>();
     return list.filter((a) => {
-      const key = a.toLowerCase();
+      const key = a.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -710,11 +710,13 @@ const payHint = onPage
     // So does a changed country, region or area.
     for (const select of [countrySelect, regionSelect, areaSelect]) {
       select?.addEventListener("change", () => {
-        if (!methStep || methStep.hidden || !locForm.checkValidity()) return;
+        if (!methStep || methStep.hidden) return;
+        // Old rates no longer apply: hide them and keep Pay off, then fetch
+        // new ones once the shopper has filled in what's now required.
         methStep.hidden = true;
         if (payBtn) payBtn.disabled = true;
         if (payStep) payStep.dataset.ready = "0";
-        locForm.requestSubmit();
+        if (locForm.checkValidity()) locForm.requestSubmit();
       });
     }
   }

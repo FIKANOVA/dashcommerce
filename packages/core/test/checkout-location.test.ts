@@ -359,6 +359,13 @@ describe("subdivision names", () => {
 		expect(regionCode("NG", "Federal Capital Territory")).toBe("FC");
 	});
 
+	it("maps India's replaced ISO codes to the current ones", () => {
+		expect(regionCode("IN", "UT")).toBe("UK");
+		expect(regionCode("IN", "IN-CT")).toBe("CG");
+		expect(regionCode("IN", "tg")).toBe("TS");
+		expect(regionCode("IN", "OR")).toBe("OD");
+	});
+
 	it("keeps codes unique within each country", () => {
 		for (const [country, table] of Object.entries(REGION_TABLE)) {
 			const codes = table.regions.map((r) => r.code);
