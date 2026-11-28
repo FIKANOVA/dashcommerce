@@ -1,7 +1,8 @@
 /**
- * Paystack counter sales: an M-PESA prompt through /charge, and a payment
- * request pushed to a card terminal. The test account has no terminals,
- * so the terminal path runs against a stand-in only.
+ * Paystack counter sales: an M-PESA prompt through /charge, Pay on their
+ * phone through /transaction/initialize, and a payment request pushed to a
+ * card terminal. The test account has no terminals, so the terminal path
+ * runs against a stand-in only.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -65,8 +66,90 @@ const start = paystackPaymentProvider.startInPersonPayment as NonNullable<
 >;
 
 describe("Paystack counter sales", () => {
-	it("declares phone and terminal", () => {
-		expect(paystackPaymentProvider.inPersonMethods).toEqual(["phone", "terminal"]);
+	it("declares phone, terminal and link, which split, and their currencies", () => {
+		expect(paystackPaymentProvider.inPersonMethods).toEqual(["phone", "terminal", "link"]);
+		expect(paystackPaymentProvider.inPersonSplitMethods).toEqual(["phone", "link"]);
+		expect(paystackPaymentProvider.inPersonCurrencies).toEqual({
+			phone: ["KES"],
+			terminal: ["NGN", "GHS", "ZAR", "USD"],
+		});
+	});
+
+	describe("link", () => {
+		const page = {
+			authorization_url: "https://checkout.paystack.com/0peioxfhpn",
+			access_code: "0peioxfhpn",
+			reference: `dc-${DRAFT}`,
+		};
+
+		it("initializes the exact total with the draft's reference and metadata", async () => {
+			const { ctx, calls } = stand({ "POST /transaction/initialize": page });
+			const result = await start(
+				ctx,
+				input({
+					currency: "GHS",
+					method: { type: "link" },
+					metadata: { orderDraftId: DRAFT, sessionId: "counter:user_1", kind: "payment" },
+					returnUrl: `https://shop.example/thank-you/${DRAFT}`,
+				}),
+				credentials,
+			);
+			expect(result).toEqual({
+				paymentReference: `dc-${DRAFT}`,
+				status: "pending",
+				paymentUrl: "https://checkout.paystack.com/0peioxfhpn",
+			});
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.body).toEqual({
+				email: "till@example.com",
+				amount: 160000,
+				currency: "GHS",
+				reference: `dc-${DRAFT}`,
+				callback_url: `https://shop.example/thank-you/${DRAFT}`,
+				metadata: {
+					orderDraftId: DRAFT,
+					sessionId: "counter:user_1",
+					kind: "payment",
+					channel: "in_person",
+				},
+			});
+		});
+
+		it("sends core's vendor shares as a flat split", async () => {
+			const { ctx, calls } = stand({ "POST /transaction/initialize": page });
+			await start(
+				ctx,
+				input({
+					method: { type: "link" },
+					allocations: [{ vendorId: "v1", accountReference: "ACCT_v1", amountMinor: 90000 }],
+					platformRemainderMinor: 70000,
+				}),
+				credentials,
+			);
+			expect(calls[0]?.body?.split).toEqual({
+				type: "flat",
+				bearer_type: "account",
+				subaccounts: [{ subaccount: "ACCT_v1", share: 90000 }],
+			});
+		});
+
+		it("refuses a currency Paystack doesn't take, before calling it", async () => {
+			const { ctx, calls } = stand({});
+			const err = await start(ctx, input({ currency: "EUR", method: { type: "link" } }), credentials).catch(
+				(e: unknown) => e,
+			);
+			expect(isCurrencyNotSupportedError(err)).toBe(true);
+			expect(calls).toHaveLength(0);
+		});
+
+		it("fails without a payment page", async () => {
+			const { ctx } = stand({
+				"POST /transaction/initialize": { ...page, authorization_url: "" },
+			});
+			await expect(start(ctx, input({ method: { type: "link" } }), credentials)).rejects.toThrow(
+				/no payment page/,
+			);
+		});
 	});
 
 	it("writes Kenyan numbers with the country code", () => {
@@ -91,6 +174,29 @@ describe("Paystack counter sales", () => {
 				metadata: { orderDraftId: DRAFT, channel: "in_person" },
 				mobile_money: { phone: "+254712345678", provider: "mpesa" },
 			});
+		});
+
+		it("saves a vendor split for the sale and charges with its code", async () => {
+			const { ctx, calls } = stand({
+				"POST /split": { split_code: "SPL_counter1" },
+				"POST /charge": { reference: `dc-${DRAFT}`, status: "pay_offline" },
+			});
+			await start(
+				ctx,
+				input({
+					allocations: [{ vendorId: "v1", accountReference: "ACCT_v1", amountMinor: 90000 }],
+				}),
+				credentials,
+			);
+			expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /split", "POST /charge"]);
+			expect(calls[0]?.body).toEqual({
+				name: `Counter sale ${DRAFT}`,
+				type: "flat",
+				currency: "KES",
+				subaccounts: [{ subaccount: "ACCT_v1", share: 90000 }],
+				bearer_type: "account",
+			});
+			expect(calls[1]?.body?.split_code).toBe("SPL_counter1");
 		});
 
 		it("reports a charge Paystack refuses at once", async () => {
@@ -118,6 +224,22 @@ describe("Paystack counter sales", () => {
 			},
 			"POST /terminal/TERM_front/event": {},
 		};
+
+		it("refuses to split a terminal payment between vendors", async () => {
+			const { ctx, calls } = stand(terminalRoutes);
+			await expect(
+				start(
+					ctx,
+					input({
+						currency: "NGN",
+						method: { type: "terminal", terminalId: "TERM_front" },
+						allocations: [{ vendorId: "v1", accountReference: "ACCT_v1", amountMinor: 90000 }],
+					}),
+					credentials,
+				),
+			).rejects.toThrow(/can't be split/);
+			expect(calls).toHaveLength(0);
+		});
 
 		it("creates a payment request and pushes it to the chosen terminal", async () => {
 			const { ctx, calls } = stand(terminalRoutes);
