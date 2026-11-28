@@ -43,6 +43,7 @@ function shop(opts: { status?: () => PaymentStatusResult } = {}) {
 		"settings:mockWebhookSecret": "test-secret",
 		"settings:defaultCurrency": "KES",
 		"settings:storeCountry": "KE",
+		"settings:counterSalesEnabled": true,
 	});
 	return {
 		...harness,

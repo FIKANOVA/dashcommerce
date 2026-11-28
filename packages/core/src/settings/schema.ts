@@ -79,7 +79,12 @@ export const SETTINGS_KEYS = [
 	"stripeWebhookSecret",
 	"checkoutMode",
 	"paymentProvider",
+	"counterSalesEnabled",
+	"counterIdleMinutes",
 ] as const;
+
+/** Minutes without use before the Counter sale page closes the counter. */
+export const DEFAULT_COUNTER_IDLE_MINUTES = 15;
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -162,7 +167,10 @@ export function validateSettingsKey(
 		case "reviewsRequireApproval":
 		case "reviewsRequirePurchase":
 		case "connectEnabled":
+		case "counterSalesEnabled":
 			return asBool(value, key);
+		case "counterIdleMinutes":
+			return asInt(value, key, 1, 240);
 		case "downloadTokenTtlHours":
 			return asInt(value, key, 1, 24 * 365);
 		case "downloadMaxUses":

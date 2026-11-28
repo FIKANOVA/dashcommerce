@@ -108,6 +108,8 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 		}
 	>();
 	const terminalEvents: Array<{ path: string; body: unknown }> = [];
+	/** Split groups created with POST /split, by code (counter sales must create none). */
+	const splits = new Map<string, Record<string, unknown>>();
 	let outagesLeft = options.verifyOutages ?? 0;
 	let verifyCalls = 0;
 
@@ -257,6 +259,22 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 			if (!request) return json({ status: false, message: "Payment request not found" }, 404);
 			return json({ status: true, message: "Payment request retrieved", data: request });
 		}
+		if (pathname === "/split") {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			const shares = body.subaccounts as Array<{ subaccount?: string; share?: number }> | undefined;
+			if (
+				!body.name ||
+				(body.type !== "flat" && body.type !== "percentage") ||
+				!body.currency ||
+				!Array.isArray(shares) ||
+				shares.some((s) => !s.subaccount || !Number.isInteger(s.share))
+			) {
+				return json({ status: false, message: "Invalid split" }, 400);
+			}
+			const code = `SPL_fake${splits.size + 1}`;
+			splits.set(code, body);
+			return json({ status: true, message: "Split created", data: { ...body, split_code: code } });
+		}
 		if (pathname === "/charge") {
 			// A counter sale's M-PESA prompt: the money arrives later, like initialize.
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -264,6 +282,9 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 			const momo = body.mobile_money as { phone?: string; provider?: string } | undefined;
 			if (momo?.provider !== "mpesa" || !/^\+254\d{9}$/.test(String(momo.phone))) {
 				return json({ status: false, message: "Invalid mobile money details" }, 400);
+			}
+			if (body.split_code !== undefined && !splits.has(String(body.split_code))) {
+				return json({ status: false, message: "Split not found" }, 400);
 			}
 			const reference = String(body.reference);
 			transactions.set(reference, {
@@ -376,6 +397,7 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 		getLastCharge: () => lastCharge,
 		paymentRequests,
 		terminalEvents,
+		splits,
 		getVerifyCalls: () => verifyCalls,
 	};
 }
@@ -456,6 +478,22 @@ function makeContext(
 					prices: { KES: { amount: 150000 }, NGN: { amount: 500000 } },
 					virtual: true,
 					manage_stock: false,
+				},
+			},
+		],
+		[
+			// A vendor's product, for counter sales that split the payment.
+			"prod_vendor_scarf",
+			{
+				id: "prod_vendor_scarf",
+				status: "published",
+				data: {
+					title: "Vendor scarf",
+					type: "simple",
+					prices: { KES: { amount: 200000 } },
+					virtual: true,
+					manage_stock: false,
+					vendor_id: "v1",
 				},
 			},
 		],
@@ -1694,6 +1732,7 @@ describe("@dashcommerce/paystack subscriptions through core", () => {
 
 describe("@dashcommerce/paystack counter sales through core", () => {
 	const EDITOR_USER = { ...ADMIN_USER, id: "user_editor", email: "till@example.com", role: 40 };
+	const counterSettings = { ...paystackSettings, "settings:counterSalesEnabled": true };
 
 	async function counterCall(
 		ctx: import("emdash").PluginContext,
@@ -1715,7 +1754,7 @@ describe("@dashcommerce/paystack counter sales through core", () => {
 	it("sends an M-PESA prompt, then the signed webhook creates a counter-sale order", async () => {
 		const paystack = fakePaystack();
 		const { ctx, getCol } = makeContext(
-			{ ...paystackSettings, "settings:defaultCurrency": "KES" },
+			{ ...counterSettings, "settings:defaultCurrency": "KES" },
 			paystack.fetch,
 		);
 
@@ -1754,7 +1793,7 @@ describe("@dashcommerce/paystack counter sales through core", () => {
 
 	it("pushes a terminal sale, then paymentrequest.success creates the order", async () => {
 		const paystack = fakePaystack();
-		const { ctx, getCol } = makeContext(paystackSettings, paystack.fetch);
+		const { ctx, getCol } = makeContext(counterSettings, paystack.fetch);
 
 		const started = await counterCall(ctx, "admin/counter/sale", {
 			input: {
@@ -1797,5 +1836,276 @@ describe("@dashcommerce/paystack counter sales through core", () => {
 			query: `?draft=${draft}`,
 		});
 		expect(status.body).toMatchObject({ status: "paid", orderNumber: orders[0]?.orderNumber });
+	});
+	/** A vendor paid through a Paystack subaccount, keeping 90% of their items. */
+	function vendorOnPaystack() {
+		return {
+			id: "v1",
+			name: "Scarf maker",
+			email: "scarves@example.com",
+			onboardingStatus: "active",
+			platformFeePercent: 10,
+			detailsSubmitted: false,
+			chargesEnabled: false,
+			payoutsEnabled: false,
+			paymentAccounts: {
+				paystack: {
+					accountReference: "ACCT_v1",
+					status: "active",
+					updatedAt: "2026-01-01T00:00:00Z",
+				},
+			},
+			createdAt: "2026-01-01T00:00:00Z",
+			updatedAt: "2026-01-01T00:00:00Z",
+		};
+	}
+
+	it("Pay on their phone: initializes the exact total and returns Paystack's page, then charge.success creates the order", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(counterSettings, paystack.fetch);
+
+		// No default currency set: the shop sells in USD, where there's no
+		// M-PESA prompt, so Pay on their phone comes first.
+		const setup = await counterCall(ctx, "admin/counter/setup", { method: "GET" });
+		expect(setup.body.methods).toEqual(["link", "terminal"]);
+
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [{ productId: "prod_ticket", quantity: 2 }],
+				method: { type: "link" },
+				currency: "NGN",
+			},
+		});
+		expect(started.status).toBe(200);
+		const draft = String(started.body.orderDraftId);
+		expect(started.body).toMatchObject({
+			status: "pending",
+			method: "link",
+			paymentUrl: "https://checkout.paystack.com/test-access-code",
+		});
+		const init = paystack.getLastInit();
+		expect(init).toMatchObject({
+			email: "till@example.com",
+			amount: 1000000,
+			currency: "NGN",
+			reference: `dc-${draft}`,
+			callback_url: `https://test.dashcommerce.dev/thank-you/${draft}`,
+			metadata: {
+				orderDraftId: draft,
+				sessionId: "counter:user_editor",
+				kind: "payment",
+				channel: "in_person",
+			},
+		});
+		expect(init?.split).toBeUndefined();
+
+		const tx = paystack.transactions.get(`dc-${draft}`);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = JSON.parse(chargeSuccess(`dc-${draft}`, draft, tx.id, 1000000)) as {
+			data: Record<string, unknown>;
+		};
+		charge.data.currency = "NGN";
+		charge.data.channel = "bank_transfer";
+		const payload = JSON.stringify(charge);
+		const res = await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(res.status).toBe(200);
+		// Paystack retries the webhook: still one order.
+		await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+
+		const orders = Array.from(getCol("orders").values()) as Order[];
+		expect(orders).toHaveLength(1);
+		expect(orders[0]).toMatchObject({
+			channel: "in_person",
+			soldBy: "user_editor",
+			paymentReference: `dc-${draft}`,
+			currency: "NGN",
+		});
+		const status = await counterCall(ctx, "admin/counter/status", {
+			method: "GET",
+			query: `?draft=${draft}`,
+		});
+		expect(status.body).toMatchObject({ status: "paid", orderNumber: orders[0]?.orderNumber });
+	});
+
+	for (const currency of ["GHS", "ZAR", "USD", "KES"]) {
+		it(`Pay on their phone initializes a ${currency} sale`, async () => {
+			const paystack = fakePaystack();
+			const { ctx } = makeContext(
+				{ ...counterSettings, "settings:defaultCurrency": currency },
+				paystack.fetch,
+			);
+			// The M-PESA prompt is for KES only; terminals take the others.
+			const setup = await counterCall(ctx, "admin/counter/setup", { method: "GET" });
+			expect(setup.body.methods).toEqual(
+				currency === "KES" ? ["phone", "link"] : ["link", "terminal"],
+			);
+			const provider = paystackPaymentProvider;
+			const result = await provider.startInPersonPayment?.(
+				ctx as never,
+				{
+					orderDraftId: "c".repeat(32),
+					amount: 12345,
+					currency,
+					customer: { email: "till@example.com" },
+					method: { type: "link" },
+				},
+				{ secretKey: SECRET_KEY },
+			);
+			expect(result).toMatchObject({
+				status: "pending",
+				paymentReference: `dc-${"c".repeat(32)}`,
+				paymentUrl: "https://checkout.paystack.com/test-access-code",
+			});
+			expect(paystack.getLastInit()).toMatchObject({ amount: 12345, currency });
+		});
+	}
+
+	it("Pay on their phone with a vendor's product sends the split and records the vendor's share", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...counterSettings, "settings:defaultCurrency": "KES" },
+			paystack.fetch,
+		);
+		getCol("vendors").set("v1", vendorOnPaystack());
+
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [
+					{ productId: "prod_vendor_scarf", quantity: 1 },
+					{ productId: "prod_ticket", quantity: 1 },
+				],
+				method: { type: "link" },
+			},
+		});
+		expect(started.status).toBe(200);
+		const draft = String(started.body.orderDraftId);
+		// KES 2,000 scarf less the vendor's 10% fee; the shop keeps its ticket and the fee.
+		expect(paystack.getLastInit()).toMatchObject({
+			amount: 350000,
+			split: {
+				type: "flat",
+				bearer_type: "account",
+				subaccounts: [{ subaccount: "ACCT_v1", share: 180000 }],
+			},
+		});
+
+		const tx = paystack.transactions.get(`dc-${draft}`);
+		if (!tx) throw new Error("initialize did not register a transaction");
+		const charge = JSON.parse(chargeSuccess(`dc-${draft}`, draft, tx.id, 350000)) as {
+			data: Record<string, unknown>;
+		};
+		charge.data.split = {
+			split_code: "SPL_dynamic",
+			shares: {
+				paystack: 5250,
+				integration: 164750,
+				subaccounts: [{ amount: 180000, subaccount_code: "ACCT_v1" }],
+			},
+		};
+		const payload = JSON.stringify(charge);
+		expect((await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload))).status).toBe(200);
+
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.channel).toBe("in_person");
+		expect(order.providerSplits).toMatchObject({
+			providerId: "paystack",
+			allocations: [
+				{ vendorId: "v1", accountReference: "ACCT_v1", amount: { amount: 180000, currency: "KES" } },
+			],
+			platformRemainder: { amount: 164750, currency: "KES" },
+		});
+	});
+
+	it("records the vendor's share from Paystack's verify when the status check creates the order first", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...counterSettings, "settings:defaultCurrency": "KES" },
+			paystack.fetch,
+		);
+		getCol("vendors").set("v1", vendorOnPaystack());
+
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [
+					{ productId: "prod_vendor_scarf", quantity: 1 },
+					{ productId: "prod_ticket", quantity: 1 },
+				],
+				method: { type: "link" },
+			},
+		});
+		const draft = String(started.body.orderDraftId);
+		// Paid; /transaction/verify reports the split before any webhook arrives.
+		const tx = paystack.transactions.get(`dc-${draft}`) as Record<string, unknown> | undefined;
+		if (!tx) throw new Error("initialize did not register a transaction");
+		tx.split = {
+			split_code: "SPL_dynamic",
+			shares: {
+				paystack: 5250,
+				integration: 164750,
+				subaccounts: [{ amount: 180000, subaccount_code: "ACCT_v1" }],
+			},
+		};
+		const status = await counterCall(ctx, "admin/counter/status", {
+			method: "GET",
+			query: `?draft=${draft}`,
+		});
+		expect(status.body.status).toBe("paid");
+
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.providerSplits).toMatchObject({
+			providerId: "paystack",
+			allocations: [
+				{ vendorId: "v1", accountReference: "ACCT_v1", amount: { amount: 180000, currency: "KES" } },
+			],
+			platformRemainder: { amount: 164750, currency: "KES" },
+			providerFee: { amount: 5250, currency: "KES" },
+		});
+
+		// The webhook arriving afterwards changes nothing.
+		const charge = JSON.parse(chargeSuccess(`dc-${draft}`, draft, Number(tx.id), 350000)) as {
+			data: Record<string, unknown>;
+		};
+		const payload = JSON.stringify(charge);
+		await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(getCol("orders").size).toBe(1);
+	});
+
+	it("a vendor's product is offered by link only: no M-PESA prompt and no saved split", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...counterSettings, "settings:defaultCurrency": "KES" },
+			paystack.fetch,
+		);
+		getCol("vendors").set("v1", vendorOnPaystack());
+
+		const setup = await counterCall(ctx, "admin/counter/setup", { method: "GET" });
+		expect(setup.body.splitMethods).toEqual(["link"]);
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [{ productId: "prod_vendor_scarf", quantity: 1 }],
+				method: { type: "phone", phone: "0710 000 000" },
+			},
+		});
+		expect(started.status).toBe(409);
+		expect(String((started.body.error as { message: string }).message)).toBe(
+			"Vendor scarf belongs to a vendor; take payment by Pay on their phone.",
+		);
+		expect(paystack.splits.size).toBe(0);
+		expect(paystack.getLastCharge()).toBeNull();
+	});
+
+	it("a vendor's product can't go to a card terminal", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(counterSettings, paystack.fetch);
+		getCol("vendors").set("v1", vendorOnPaystack());
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
+				lines: [{ productId: "prod_vendor_scarf", quantity: 1 }],
+				method: { type: "terminal", terminalId: "TERM_front" },
+				currency: "NGN",
+			},
+		});
+		expect(started.status).toBe(409);
+		expect(paystack.paymentRequests.size).toBe(0);
 	});
 });

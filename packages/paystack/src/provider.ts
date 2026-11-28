@@ -163,6 +163,8 @@ interface PaystackVerifyData {
 	/** A plan code, or a plan object, when the charge belongs to a plan. */
 	plan?: unknown;
 	plan_object?: unknown;
+	/** Present when the payment was split, as on `charge.success`. */
+	split?: PaystackWebhookEvent["data"]["split"];
 }
 
 interface PaystackRefundData {
@@ -481,7 +483,7 @@ function disputeEvent(
  * (`bearer_type: "account"`), as with Stripe Connect. Validated first: a
  * bad share must fail checkout rather than settle everything to the shop.
  */
-function splitFor(input: InitCheckoutInput):
+function splitFor(input: Pick<InitCheckoutInput, "allocations" | "amount">):
 	| {
 			type: "flat";
 			bearer_type: "account";
@@ -945,6 +947,54 @@ const PHONE_PROVIDER: Record<string, string> = { KES: "mpesa" };
 /** Paystack's payment requests (and so terminals) take these currencies only. */
 const TERMINAL_CURRENCIES = new Set(["NGN", "GHS", "ZAR", "USD"]);
 
+/**
+ * "Pay on their phone": a transaction for the exact sale total, with the
+ * same reference, metadata and vendor split as online checkout. Its
+ * `authorization_url` is Paystack's own checkout page, offering whatever
+ * channels the merchant has on for that currency. The `charge.success`
+ * webhook or the counter page's status check confirms it.
+ */
+async function startLinkPayment(
+	ctx: PaymentProviderRuntimeContext,
+	input: StartInPersonPaymentInput,
+	client: PaystackClientOptions,
+	currency: string,
+): Promise<StartInPersonPaymentResult> {
+	if (!SUPPORTED_CURRENCIES.has(currency)) throw new CurrencyNotSupportedError(currency);
+	const split = splitFor(input);
+	let data: PaystackInitializeData;
+	try {
+		data = await call<PaystackInitializeData>(ctx, {
+			client,
+			path: "/transaction/initialize",
+			body: {
+				email: input.customer.email,
+				amount: input.amount,
+				currency,
+				reference: paystackReferenceFor(input.orderDraftId),
+				...(input.returnUrl ? { callback_url: paystackCallbackUrl(input.returnUrl) } : {}),
+				metadata: {
+					...input.metadata,
+					orderDraftId: input.orderDraftId,
+					channel: "in_person",
+				},
+				...(split ? { split } : {}),
+			},
+		});
+	} catch (err) {
+		if (err instanceof PaystackApiError && err.body.code === "unsupported_currency") {
+			throw new CurrencyNotSupportedError(currency);
+		}
+		throw err;
+	}
+	if (!data.authorization_url) throw new Error("Paystack returned no payment page");
+	return {
+		paymentReference: data.reference,
+		status: "pending",
+		paymentUrl: data.authorization_url,
+	};
+}
+
 /** Payment request codes; a counter terminal sale's payment reference. */
 const PAYMENT_REQUEST_PREFIX = "PRQ_";
 
@@ -1000,6 +1050,11 @@ async function startPhonePayment(
 		throw new Error("Paystack phone prompts are for M-PESA in Kenya (KES) only for now");
 	}
 	const reference = paystackReferenceFor(input.orderDraftId);
+	// /charge takes no inline split (only a saved split_code or a single
+	// subaccount), so core offers vendor products by link only.
+	if (input.allocations && input.allocations.length > 0) {
+		throw new Error("An M-PESA prompt can't be split between vendors; use Pay on their phone");
+	}
 	const data = await call<PaystackChargeData>(ctx, {
 		client,
 		path: "/charge",
@@ -1008,7 +1063,7 @@ async function startPhonePayment(
 			amount: input.amount,
 			currency,
 			reference,
-			metadata: { orderDraftId: input.orderDraftId, channel: "in_person" },
+			metadata: { ...input.metadata, orderDraftId: input.orderDraftId, channel: "in_person" },
 			mobile_money: { phone: paystackPhone(input.method.phone, currency), provider },
 		},
 	});
@@ -1158,9 +1213,19 @@ export const paystackPaymentProvider: PaymentProvider = {
 	// Hosted page, or the Popup over the store's checkout (./checkout-client).
 	checkoutStyles: ["hosted", "on_page"],
 
-	// Counter sales: an M-PESA prompt on the customer's phone, or a card
-	// terminal (core offers terminals only when listTerminals returns some).
-	inPersonMethods: ["phone", "terminal"],
+	// Counter sales: an M-PESA prompt on the customer's phone, Paystack's
+	// own checkout page opened on their phone (a QR code or shared link), or
+	// a card terminal (core offers terminals only when listTerminals returns
+	// some). A vendor's product is sold by link only: initialize takes an
+	// inline split, while /charge takes only a saved split_code (which would
+	// leave a split group per sale in the dashboard) and a terminal's
+	// payment request takes none.
+	inPersonMethods: ["phone", "terminal", "link"],
+	inPersonSplitMethods: ["link"],
+	inPersonCurrencies: {
+		phone: Object.keys(PHONE_PROVIDER),
+		terminal: [...TERMINAL_CURRENCIES],
+	},
 
 	// Current scheme first; see ./webhook-verify for both.
 	webhookHeaders: ["paystack-signature", "x-paystack-signature"],
@@ -1469,11 +1534,16 @@ export const paystackPaymentProvider: PaymentProvider = {
 			}
 		}
 		const planCode = planCodeOf(data.plan, data.plan_object);
+		const splitSettlement =
+			status === "succeeded" && data.currency
+				? splitSettlementFrom(data.split, data.currency.toUpperCase())
+				: undefined;
 		return {
 			status: status ?? "pending",
 			paymentReference: data.reference,
 			amount: data.amount,
 			currency: data.currency?.toUpperCase(),
+			...(splitSettlement ? { splitSettlement } : {}),
 			reason: status ? data.gateway_response : `Unrecognised Paystack status: ${data.status}`,
 			...(planCode
 				? {
@@ -1622,6 +1692,12 @@ export const paystackPaymentProvider: PaymentProvider = {
 		const method = input.method;
 		if (method.type === "phone") {
 			return startPhonePayment(ctx, { ...withEmail, method }, client, currency);
+		}
+		if (method.type === "link") {
+			return startLinkPayment(ctx, withEmail, client, currency);
+		}
+		if (input.allocations && input.allocations.length > 0) {
+			throw new Error("A card terminal payment can't be split between vendors");
 		}
 		return startTerminalPayment(ctx, { ...withEmail, method }, client, currency);
 	},

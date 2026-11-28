@@ -110,6 +110,20 @@ export function OrdersPage() {
 
 function OrdersList() {
 	const api = usePluginAPI();
+	// Counter sale has no sidebar entry (it is off by default); link to it
+	// here once an admin has turned it on. Its setup route answers 404 while
+	// counter sales are off and 403 to anyone who can't sell.
+	const [counterOn, setCounterOn] = useState(false);
+	useEffect(() => {
+		let live = true;
+		api
+			.get("admin/counter/setup")
+			.then(() => live && setCounterOn(true))
+			.catch(() => undefined);
+		return () => {
+			live = false;
+		};
+	}, [api]);
 
 	const buildQuery = useMemo(
 		() => (f: OrdersFilters) => ({
@@ -155,6 +169,11 @@ function OrdersList() {
 
 	return (
 		<Card title="Orders">
+			{counterOn && (
+				<p style={{ margin: "0 0 12px" }}>
+					<a href="./counter">New counter sale</a>
+				</p>
+			)}
 			<div
 				style={{
 					display: "grid",

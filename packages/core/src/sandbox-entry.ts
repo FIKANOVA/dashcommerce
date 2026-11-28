@@ -154,10 +154,14 @@ export interface CreatePluginOptions {
  * Static admin page list — must match src/index.ts adminPages. Populates
  * `admin.pages`, which the emdash plugin-manager API reads to set
  * `hasAdminPages` and show the Settings gear link on the Plugins page.
+ *
+ * Counter sale (`/counter`) is left out on purpose: counter sales are off
+ * until an admin turns them on, and EmDash's sidebar can't hide an entry at
+ * runtime. The page still mounts (admin/entry.tsx); Orders and Settings
+ * link to it once counter sales are on.
  */
 const ADMIN_PAGES: PluginAdminPage[] = [
 	{ path: "/orders", label: "Orders", icon: "shopping-bag" },
-	{ path: "/counter", label: "Counter sale", icon: "credit-card" },
 	{ path: "/customers", label: "Customers", icon: "users" },
 	{ path: "/coupons", label: "Coupons", icon: "tag" },
 	{ path: "/shipping", label: "Shipping", icon: "truck" },

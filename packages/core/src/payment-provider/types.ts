@@ -457,6 +457,12 @@ export interface PaymentStatusResult {
 	reason?: string;
 	/** Present when the payment is a subscription charge. */
 	subscription?: ProviderSubscriptionInfo;
+	/**
+	 * What the provider settled to each party of a split payment, when its
+	 * status lookup reports it (same shape as on `charge.succeeded`). Core
+	 * records it on an order the status check creates.
+	 */
+	splitSettlement?: Extract<NormalizedPaymentEvent, { type: "charge.succeeded" }>["splitSettlement"];
 }
 
 /** A bank or mobile-money provider in a country, for payout onboarding. */
@@ -506,8 +512,12 @@ export interface CreatedPayoutAccount {
 	metadata?: Record<string, string>;
 }
 
-/** How staff take payment at a counter: a phone prompt or a card terminal. */
-export type InPersonMethodType = "phone" | "terminal";
+/**
+ * How staff take payment at a counter: a prompt on the customer's phone, a
+ * card terminal, or a payment link the customer opens on their own phone
+ * (shown as a QR code, or shared by WhatsApp, SMS or email).
+ */
+export type InPersonMethodType = "phone" | "terminal" | "link";
 
 /** A provider's card terminal the merchant can push a payment to. */
 export interface PaymentProviderTerminal {
@@ -529,7 +539,21 @@ export interface StartInPersonPaymentInput {
 	 * when the customer gave none (some providers refuse a charge without one).
 	 */
 	customer: { email: string; phone?: string };
-	method: { type: "phone"; phone: string } | { type: "terminal"; terminalId: string };
+	method:
+		| { type: "phone"; phone: string }
+		| { type: "terminal"; terminalId: string }
+		| { type: "link" };
+	/**
+	 * Per-vendor shares, as for online checkout. Present only for a sale
+	 * with vendor-owned items, and only for a method the provider lists in
+	 * `inPersonSplitMethods`. Sums to `amount - platformRemainderMinor`.
+	 */
+	allocations?: PaymentProviderSplitAllocation[];
+	platformRemainderMinor?: number;
+	/** The same draft metadata online checkout sends (`orderDraftId`, `sessionId`, …). */
+	metadata?: Record<string, string>;
+	/** Where the provider's page sends the customer after paying (`link` only). */
+	returnUrl?: string;
 }
 
 export interface StartInPersonPaymentResult {
@@ -543,6 +567,11 @@ export interface StartInPersonPaymentResult {
 	status: "pending" | "succeeded" | "failed";
 	/** The provider's reason, when it refused at once. */
 	reason?: string;
+	/**
+	 * `link` only: the provider's own payment page for this sale. Core shows
+	 * it as a QR code and offers it to share; it must be an https URL.
+	 */
+	paymentUrl?: string;
 }
 
 export interface PaymentProvider {
@@ -677,6 +706,20 @@ export interface PaymentProvider {
 	 * from that status check, whichever comes first.
 	 */
 	readonly inPersonMethods?: readonly InPersonMethodType[];
+
+	/**
+	 * The in-person methods that can carry a vendor split (`allocations`).
+	 * A counter sale with vendor-owned items is offered only these; with
+	 * none, such a sale is refused and has to be sold online.
+	 */
+	readonly inPersonSplitMethods?: readonly InPersonMethodType[];
+
+	/**
+	 * Currencies a method is limited to, e.g. `{ phone: ["KES"] }` for an
+	 * M-PESA prompt. A method not listed takes every currency the provider
+	 * supports. Core offers only the methods that fit the sale's currency.
+	 */
+	readonly inPersonCurrencies?: Readonly<Partial<Record<InPersonMethodType, readonly string[]>>>;
 
 	/** The merchant's card terminals, for the `terminal` method. */
 	listTerminals?(

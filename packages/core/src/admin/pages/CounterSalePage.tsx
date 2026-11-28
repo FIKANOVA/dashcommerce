@@ -2,26 +2,48 @@
  * Counter sale — staff sell from the shop's products and stock in person.
  *
  * Staff add products (stock is held when the payment starts), choose how
- * the customer pays (a prompt on their phone, or a card terminal when the
- * provider lists one) and wait. The page checks every few seconds; the
- * order is created through the same path as an online order.
+ * the customer pays (a prompt on their phone, Pay on their phone — a QR
+ * code or shared link to the provider's own payment page — or a card
+ * terminal when the provider lists one) and wait. The page checks every few
+ * seconds; the order is created through the same path as an online order.
+ *
+ * Only this screen saying Paid means paid. After a spell without use the
+ * page closes the counter, so an unattended device can't sell under the
+ * signed-in staff member's name.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Card, Input, Loading, Select, Table, confirm, usePluginAPI } from "../kit";
 import { format as formatMoney, type Money } from "../../money";
+import { type ShareInput, smsLink, whatsAppLink } from "../counter-share";
+import { encodeQr, qrPath } from "../qr";
 import { T } from "../theme";
 
 const POLL_MS = 3000;
+/** How often the page looks at the idle time. */
+const IDLE_CHECK_MS = 10_000;
+
+type Method = "phone" | "terminal" | "link";
+
+const METHOD_LABELS: Record<Method, string> = {
+	phone: "Phone (M-PESA prompt)",
+	link: "Pay on their phone (QR code or link)",
+	terminal: "Card terminal",
+};
 
 interface Setup {
 	available: boolean;
 	message?: string;
 	providerLabel?: string;
 	currency: string;
-	methods: Array<"phone" | "terminal">;
+	methods: Method[];
+	/** The methods a sale with a vendor's product may use. */
+	splitMethods?: Method[];
 	terminals: Array<{ id: string; name: string }>;
 	terminalMessage?: string;
+	/** Minutes without use before the counter closes. */
+	idleMinutes?: number;
+	shopName?: string;
 }
 
 interface ProductRow {
@@ -29,6 +51,8 @@ interface ProductRow {
 	title: string;
 	price: Money;
 	stockQuantity: number | null;
+	/** A vendor's product: only methods that split the payment can sell it. */
+	vendor?: boolean;
 }
 
 interface Line extends ProductRow {
@@ -38,8 +62,12 @@ interface Line extends ProductRow {
 interface SaleState {
 	orderDraftId: string;
 	status: "pending" | "paid" | "failed";
-	method: "phone" | "terminal";
+	method: Method;
 	amount: number;
+	/** `link`, while it waits: the provider's payment page. */
+	paymentUrl?: string;
+	/** `link`: whether the link was emailed to the customer. */
+	linkEmailed?: boolean;
 	currency: string;
 	failure?: "declined" | "timed_out";
 	reason?: string;
@@ -60,11 +88,16 @@ function isPermanent(err: unknown): boolean {
 }
 
 /**
- * Keep checking while the customer may still pay: a pending sale, or a
- * terminal sale that stopped waiting (a card can still be tapped late).
+ * Keep checking while the customer may still pay: a pending sale, a
+ * terminal sale that stopped waiting (a card can still be tapped late), or
+ * a link that timed out (the customer may still pay on the page).
  */
 function keepChecking(sale: SaleState): boolean {
-	return sale.status === "pending" || (sale.status === "failed" && sale.method === "terminal");
+	return (
+		sale.status === "pending" ||
+		(sale.status === "failed" &&
+			(sale.method === "terminal" || (sale.method === "link" && sale.failure === "timed_out")))
+	);
 }
 
 function errorText(err: unknown): string {
@@ -72,9 +105,130 @@ function errorText(err: unknown): string {
 }
 
 function failureText(sale: SaleState): string {
-	if (sale.failure === "timed_out") return "Timed out. The customer didn't approve in time.";
+	if (sale.failure === "timed_out") {
+		return sale.method === "link"
+			? "Timed out. The customer didn't pay in time."
+			: "Timed out. The customer didn't approve in time.";
+	}
 	const where = sale.method === "phone" ? "Cancelled or declined on the phone" : "Cancelled or declined on the terminal";
 	return sale.reason ? `${where}: ${sale.reason}` : `${where}.`;
+}
+
+/** The notice staff see on every counter screen. */
+export function PaidOnlyHere() {
+	return (
+		<Alert type="warning" title="Paid means this screen says Paid">
+			A sale is paid only when this screen says Paid — never because of a customer's SMS or
+			screenshot.
+		</Alert>
+	);
+}
+
+/** The payment link as a QR code, drawn here from the page's own code. */
+export function PaymentQr({ url }: { url: string }) {
+	const drawn = useMemo(() => {
+		try {
+			const code = encodeQr(url);
+			return { path: qrPath(code), side: code.size + 8 };
+		} catch {
+			return null;
+		}
+	}, [url]);
+	if (!drawn) {
+		return <p style={{ color: T.textMuted }}>This link is too long for a QR code; share it instead.</p>;
+	}
+	return (
+		<svg
+			role="img"
+			aria-label="QR code for the payment link"
+			viewBox={`0 0 ${drawn.side} ${drawn.side}`}
+			shapeRendering="crispEdges"
+			style={{ width: "100%", maxWidth: 280, height: "auto", display: "block", background: T.qrLight }}
+		>
+			<rect width={drawn.side} height={drawn.side} fill={T.qrLight} />
+			<path d={drawn.path} fill={T.qrDark} />
+		</svg>
+	);
+}
+
+/** A link styled as a secondary button (WhatsApp and SMS open their own apps). */
+const LINK_BUTTON: CSSProperties = {
+	display: "inline-flex",
+	alignItems: "center",
+	justifyContent: "center",
+	padding: "8px 14px",
+	fontSize: "0.95em",
+	fontWeight: 500,
+	borderRadius: 6,
+	border: `1px solid ${T.border}`,
+	background: T.surfaceSunken,
+	color: T.text,
+	textDecoration: "none",
+};
+
+const LINK_INPUT_ID = "dc-counter-payment-link";
+
+async function copyText(text: string): Promise<boolean> {
+	try {
+		await navigator.clipboard.writeText(text);
+		return true;
+	} catch {
+		const fallback = document.getElementById(LINK_INPUT_ID);
+		if (!(fallback instanceof HTMLInputElement)) return false;
+		fallback.focus();
+		fallback.select();
+		try {
+			return document.execCommand("copy");
+		} catch {
+			return false;
+		}
+	}
+}
+
+export function ShareLink({ sale, share, email }: { sale: SaleState; share: ShareInput; email: string }) {
+	const [copied, setCopied] = useState<"yes" | "no" | null>(null);
+	return (
+		<div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+			<p style={{ margin: 0 }}>
+				Ask the customer to scan this with their phone's camera, then pay on the page that opens.
+			</p>
+			<PaymentQr url={share.url} />
+			<Input
+				id={LINK_INPUT_ID}
+				label="Payment link"
+				value={share.url}
+				readOnly
+				onFocus={(e) => e.currentTarget.select()}
+			/>
+			<div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+				<a style={LINK_BUTTON} href={whatsAppLink(share)} target="_blank" rel="noopener noreferrer">
+					Share on WhatsApp
+				</a>
+				<a style={LINK_BUTTON} href={smsLink(share)}>
+					Send by SMS
+				</a>
+				<Button
+					onClick={async () => setCopied((await copyText(share.url)) ? "yes" : "no")}
+				>
+					Copy link
+				</Button>
+			</div>
+			<p role="status" style={{ margin: 0, color: T.textMuted, fontSize: 13 }}>
+				{copied === "yes"
+					? "Link copied."
+					: copied === "no"
+						? "Couldn't copy; select the link above and copy it."
+						: "WhatsApp and SMS open on this device with the message ready; nothing is sent until you tap send."}
+			</p>
+			{sale.linkEmailed !== undefined && (
+				<p style={{ margin: 0, color: T.textMuted, fontSize: 13 }}>
+					{sale.linkEmailed
+						? `The link was emailed to ${email || "the customer"}.`
+						: "The link couldn't be emailed; share it another way."}
+				</p>
+			)}
+		</div>
+	);
 }
 
 export function CounterSalePage() {
@@ -87,7 +241,7 @@ export function CounterSalePage() {
 	const [searching, setSearching] = useState(false);
 
 	const [lines, setLines] = useState<Line[]>([]);
-	const [method, setMethod] = useState<"phone" | "terminal">("phone");
+	const [method, setMethod] = useState<Method>("phone");
 	const [phone, setPhone] = useState("");
 	const [terminalId, setTerminalId] = useState("");
 	const [email, setEmail] = useState("");
@@ -99,6 +253,11 @@ export function CounterSalePage() {
 	/** A failed attempt the staff member went back to change; the next payment retries it. */
 	const [changedFrom, setChangedFrom] = useState<string | null>(null);
 	const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** Bumped whenever checking stops, so an answer already on its way is ignored. */
+	const pollGeneration = useRef(0);
+	/** The counter closed after a spell without use. */
+	const [closed, setClosed] = useState(false);
+	const lastActivity = useRef(Date.now());
 
 	useEffect(() => {
 		api
@@ -136,18 +295,64 @@ export function CounterSalePage() {
 	const stopPolling = useCallback(() => {
 		if (pollTimer.current) clearTimeout(pollTimer.current);
 		pollTimer.current = null;
+		pollGeneration.current += 1;
 	}, []);
 
 	useEffect(() => stopPolling, [stopPolling]);
 
+	// Close the counter after the set time without use: the sale on screen
+	// and everything typed are cleared. A payment already started still
+	// becomes an order if the customer pays.
+	const idleMinutes = setup?.idleMinutes ?? 15;
+	useEffect(() => {
+		if (!setup?.available || closed) return;
+		const touch = () => {
+			lastActivity.current = Date.now();
+		};
+		const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
+		for (const e of events) window.addEventListener(e, touch, { passive: true });
+		lastActivity.current = Date.now();
+		const timer = setInterval(() => {
+			if (Date.now() - lastActivity.current < idleMinutes * 60_000) return;
+			stopPolling();
+			setSale(null);
+			setChangedFrom(null);
+			setLines([]);
+			setPhone("");
+			setEmail("");
+			setCustomerPhone("");
+			setQuery("");
+			setSaleError(null);
+			setClosed(true);
+		}, IDLE_CHECK_MS);
+		return () => {
+			for (const e of events) window.removeEventListener(e, touch);
+			clearInterval(timer);
+		};
+	}, [setup, closed, idleMinutes, stopPolling]);
+
+	// A vendor's product can be paid for only by a method that splits the payment.
+	const hasVendorLine = lines.some((l) => l.vendor);
+	const methods: Method[] = useMemo(() => {
+		if (!setup) return [];
+		return hasVendorLine ? (setup.splitMethods ?? []) : setup.methods;
+	}, [setup, hasVendorLine]);
+	useEffect(() => {
+		if (methods.length > 0 && !methods.includes(method)) setMethod(methods[0] as Method);
+	}, [methods, method]);
+
 	const poll = useCallback(
 		(orderDraftId: string) => {
+			const generation = pollGeneration.current;
 			pollTimer.current = setTimeout(async () => {
 				try {
 					const next = await api.get<SaleState>("admin/counter/status", { draft: orderDraftId });
+					// Checking stopped (counter closed or a new sale) while this was on its way.
+					if (generation !== pollGeneration.current) return;
 					setSale(next);
 					if (keepChecking(next)) poll(orderDraftId);
 				} catch (err) {
+					if (generation !== pollGeneration.current) return;
 					if (isPermanent(err)) {
 						setSaleError(`Stopped checking: ${errorText(err)}`);
 						return;
@@ -188,10 +393,15 @@ export function CounterSalePage() {
 		try {
 			const started = await api.post<SaleState>("admin/counter/sale", {
 				lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
-				method: method === "phone" ? { type: "phone", phone } : { type: "terminal", terminalId },
+				method:
+					method === "phone"
+						? { type: "phone", phone }
+						: method === "link"
+							? { type: "link" }
+							: { type: "terminal", terminalId },
 				currency: setup?.currency,
 				...(email.trim() ? { customerEmail: email.trim() } : {}),
-				...(method === "terminal" && customerPhone.trim()
+				...(method !== "phone" && customerPhone.trim()
 					? { customerPhone: customerPhone.trim() }
 					: {}),
 				...(retryOf ? { retryOf } : {}),
@@ -251,6 +461,28 @@ export function CounterSalePage() {
 		);
 	}
 	if (!setup) return <Loading />;
+	if (closed) {
+		return (
+			<Card title="Counter sale">
+				<Alert type="info" title="Counter closed">
+					The counter closed after {idleMinutes} {idleMinutes === 1 ? "minute" : "minutes"} without
+					use. Anything typed was cleared. A customer who still pays for an earlier sale gets
+					their order; it appears in Orders.
+				</Alert>
+				<div style={{ marginTop: 12 }}>
+					<Button
+						variant="primary"
+						onClick={() => {
+							lastActivity.current = Date.now();
+							setClosed(false);
+						}}
+					>
+						Open the counter
+					</Button>
+				</div>
+			</Card>
+		);
+	}
 	if (!setup.available) {
 		return (
 			<Card title="Counter sale">
@@ -266,20 +498,35 @@ export function CounterSalePage() {
 	const canPay =
 		lines.length > 0 &&
 		!submitting &&
-		(method === "phone" ? phone.trim().length >= 9 : terminalId !== "");
+		methods.includes(method) &&
+		(method === "phone" ? phone.trim().length >= 9 : method === "link" ? true : terminalId !== "");
 
 	if (sale) {
+		const total = { amount: sale.amount, currency: sale.currency };
 		return (
 			<Card title="Counter sale">
-				<p style={{ fontSize: "1.2em", margin: "0 0 12px" }}>
-					{formatMoney({ amount: sale.amount, currency: sale.currency })}
-				</p>
+				<PaidOnlyHere />
+				<p style={{ fontSize: "1.2em", margin: "12px 0" }}>{formatMoney(total)}</p>
 				{sale.status === "pending" && (
 					<Alert type="info" title="Waiting for the customer">
 						{sale.method === "phone"
 							? "Waiting for the customer to approve on their phone."
-							: "Waiting for the customer to pay on the terminal."}
+							: sale.method === "link"
+								? "Waiting for the customer to pay on their phone."
+								: "Waiting for the customer to pay on the terminal."}
 					</Alert>
+				)}
+				{sale.status === "pending" && sale.method === "link" && sale.paymentUrl && (
+					<ShareLink
+						sale={sale}
+						email={email.trim()}
+						share={{
+							url: sale.paymentUrl,
+							total,
+							shopName: setup.shopName ?? "",
+							...(customerPhone.trim() ? { customerPhone: customerPhone.trim() } : {}),
+						}}
+					/>
 				)}
 				{sale.status === "paid" && (
 					<Alert type="success" title={`Paid. Order ${sale.orderNumber ?? ""}`}>
@@ -291,10 +538,12 @@ export function CounterSalePage() {
 						{failureText(sale)} The stock is no longer held.
 						{sale.method === "terminal"
 							? " Still checking in case the card is tapped late; check the terminal before you retry."
-							: ""}
+							: sale.method === "link" && sale.failure === "timed_out"
+								? " Still checking in case the customer pays late; if they do, the order is still created."
+								: ""}
 					</Alert>
 				)}
-				<div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+				<div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
 					{sale.status === "failed" && (
 						<Button variant="primary" onClick={takePayment} disabled={submitting}>
 							Retry
@@ -337,6 +586,7 @@ export function CounterSalePage() {
 
 	return (
 		<div style={{ display: "grid", gap: 16 }}>
+			<PaidOnlyHere />
 			<Card title="Counter sale">
 				<Input
 					label="Find a product"
@@ -354,7 +604,11 @@ export function CounterSalePage() {
 							data={results}
 							getRowKey={(r) => r.productId}
 							columns={[
-								{ key: "title", header: "Product", render: (r) => r.title },
+								{
+									key: "title",
+									header: "Product",
+									render: (r) => (r.vendor ? `${r.title} (vendor)` : r.title),
+								},
 								{ key: "price", header: "Price", render: (r) => formatMoney(r.price) },
 								{
 									key: "stock",
@@ -425,13 +679,19 @@ export function CounterSalePage() {
 					<Select
 						label="Customer pays by"
 						value={method}
-						options={setup.methods.map((m) => ({
-							value: m,
-							label: m === "phone" ? "Phone (M-PESA prompt)" : "Card terminal",
-						}))}
-						onChange={(e) => setMethod(e.currentTarget.value as "phone" | "terminal")}
+						options={methods.map((m) => ({ value: m, label: METHOD_LABELS[m] }))}
+						onChange={(e) => setMethod(e.currentTarget.value as Method)}
 					/>
-					{method === "phone" ? (
+					{method === "link" ? (
+						<Input
+							label="Customer's phone number for WhatsApp or SMS (optional)"
+							type="tel"
+							inputMode="tel"
+							placeholder="+254712345678"
+							value={customerPhone}
+							onChange={(e) => setCustomerPhone(e.currentTarget.value)}
+						/>
+					) : method === "phone" ? (
 						<Input
 							label="Customer's phone number"
 							type="tel"
@@ -470,6 +730,13 @@ export function CounterSalePage() {
 						</p>
 					)}
 				</div>
+				{hasVendorLine && (
+					<p style={{ color: T.textMuted, fontSize: 13 }}>
+						{methods.length > 0
+							? "This sale has a vendor's product, so only payment methods that pay the vendor their share are offered."
+							: "This sale has a vendor's product, which can't be paid for at the counter; sell it online."}
+					</p>
+				)}
 				{setup.terminalMessage && (
 					<p style={{ color: T.textMuted, fontSize: 13 }}>{setup.terminalMessage}</p>
 				)}
