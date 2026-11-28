@@ -7,8 +7,8 @@
  *   DELETE /cart/item?lineId={id}        — remove
  *   POST   /cart/coupon                  — apply { code }
  *   DELETE /cart/coupon/remove?code={code} — remove
- *   POST   /cart/shipping-location       — minimal ship-to {country, region?, postalCode?} (hosted checkout)
- *   GET    /cart/shipping-regions        — regions the shipping zones name, and countries they list postcodes for (hosted checkout)
+ *   POST   /cart/shipping-location       — minimal ship-to {country, region?, postalCode?, area?} (hosted checkout)
+ *   GET    /cart/shipping-regions        — countries, regions and areas the shipping zones name, and countries they list postcodes for (hosted checkout)
  *   POST   /cart/shipping-address        — full address → recalc tax (embedded checkout)
  *   POST   /cart/shipping-methods        — list available rates for current ship-to
  *   POST   /cart/shipping-method         — set method id
@@ -38,8 +38,17 @@ import { verifyRestoreToken } from "../abandoned-cart/recover";
 import { resolveDiscount, validateCoupon } from "../coupons/validate";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { calculateRates } from "../shipping/calculate";
-import { checkedRegion, pickZone, zonePostcodeCountries, zoneRegions } from "../shipping/calculate";
+import {
+	checkedRegion,
+	methodsForAddress,
+	zoneAreas,
+	zoneCountries,
+	zonePostcodeCountries,
+	zoneRegions,
+} from "../shipping/calculate";
+import { areaError, tidyArea } from "../shipping/areas";
 import { isPlausiblePostcode, POSTCODE_MAX_LENGTH } from "../shipping/postcodes";
+import { COUNTRY_TABLE } from "../data/countries";
 import { regionLabel, regionName } from "../data/regions";
 import type {
 	CartLineItem,
@@ -112,6 +121,25 @@ function postcodeError(value: unknown): string | null {
 		return `postalCode must be up to ${POSTCODE_MAX_LENGTH} letters, digits, spaces or hyphens`;
 	}
 	return null;
+}
+
+/**
+ * Why an `area` sent to a cart route is refused, or null when it is fine:
+ * absent, or plain text of at most 80 characters (see `shipping/areas`).
+ */
+function areaInputError(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string") return "area must be text";
+	const error = areaError(value);
+	return error ? `area ${error}` : null;
+}
+
+/**
+ * The address with `area`, when given, as its `city`: the area is where
+ * the shopper is, and receipts and orders already show the city.
+ */
+function withArea<A extends { city?: string }>(address: A, area: unknown): A {
+	return typeof area === "string" ? { ...address, city: tidyArea(area) } : address;
 }
 
 /** The address with its region checked against the zones (see `checkedRegion`). */
@@ -428,13 +456,16 @@ export const cartRoutes = {
 	"cart/shipping-address": {
 		public: true,
 		handler: async (routeCtx: RouteContext, ctx: PluginContext) => {
-			const body = routeCtx.input as { address?: CartState["shippingAddress"] };
+			const body = routeCtx.input as { address?: CartState["shippingAddress"]; area?: unknown };
 			if (!body.address) return errorResponse("address required", 400);
-			const badPostcode = postcodeError(body.address.postalCode);
-			if (badPostcode) return errorResponse(badPostcode, 400);
+			const badInput = postcodeError(body.address.postalCode) ?? areaInputError(body.area);
+			if (badInput) return errorResponse(badInput, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
-			const shippingAddress = withCheckedRegion(body.address, await readZones(ctx));
+			const shippingAddress = withCheckedRegion(
+				withArea(body.address, body.area),
+				await readZones(ctx),
+			);
 			const updated = recalculate(
 				{ ...cart, shippingAddress },
 				await readPricingPolicy(ctx),
@@ -448,7 +479,8 @@ export const cartRoutes = {
 	 * Stamp customer email + billing address onto the cart. For sites
 	 * where shipping = billing, a single POST after the address form is
 	 * enough. Also accepts an optional `shippingAddress` so callers can
-	 * set both in one round trip.
+	 * set both in one round trip. An optional `area` becomes the shipping
+	 * address's `city`.
 	 */
 	"cart/contact": {
 		public: true,
@@ -458,18 +490,23 @@ export const cartRoutes = {
 				billingAddress?: CartState["billingAddress"];
 				shippingAddress?: CartState["shippingAddress"];
 				notes?: string;
+				area?: unknown;
 			};
-			const badPostcode =
+			const badInput =
 				postcodeError(body.shippingAddress?.postalCode) ??
-				postcodeError(body.billingAddress?.postalCode);
-			if (badPostcode) return errorResponse(badPostcode, 400);
+				postcodeError(body.billingAddress?.postalCode) ??
+				areaInputError(body.area);
+			if (badInput) return errorResponse(badInput, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const next: CartState = { ...cart };
 			if (body.email) next.customerEmail = body.email;
 			if (body.billingAddress) next.billingAddress = body.billingAddress;
 			if (body.shippingAddress) {
-				next.shippingAddress = withCheckedRegion(body.shippingAddress, await readZones(ctx));
+				next.shippingAddress = withCheckedRegion(
+					withArea(body.shippingAddress, body.area),
+					await readZones(ctx),
+				);
 			}
 			if (body.notes !== undefined) next.notes = body.notes;
 			const updated = recalculate(next, await readPricingPolicy(ctx));
@@ -660,6 +697,10 @@ export const cartRoutes = {
 	 * no zone names is stored as no region (see `checkedRegion`);
 	 * `cart/contact` and `cart/shipping-address` check theirs the same way.
 	 *
+	 * The area is the town, district or estate (`Westlands`), stored as the
+	 * address's `city` and matched against the areas zones list. An empty
+	 * area means "somewhere else"; without an `area` field the city is kept.
+	 *
 	 * Contrast with `cart/contact`, which requires the full address
 	 * because the embedded-Elements flow has nowhere else to collect
 	 * it.
@@ -671,13 +712,14 @@ export const cartRoutes = {
 				country?: string;
 				region?: unknown;
 				postalCode?: unknown;
+				area?: unknown;
 			};
 			const country = body.country?.trim().toUpperCase();
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
 			}
-			const badPostcode = postcodeError(body.postalCode);
-			if (badPostcode) return errorResponse(badPostcode, 400);
+			const badInput = postcodeError(body.postalCode) ?? areaInputError(body.area);
+			if (badInput) return errorResponse(badInput, 400);
 			const postalCode = typeof body.postalCode === "string" ? body.postalCode.trim() : "";
 			if (
 				body.region !== undefined &&
@@ -701,7 +743,7 @@ export const cartRoutes = {
 					lastName: prior?.lastName ?? "",
 					line1: prior?.line1 ?? "",
 					...(prior?.line2 ? { line2: prior.line2 } : {}),
-					city: prior?.city ?? "",
+					city: typeof body.area === "string" ? tidyArea(body.area) : (prior?.city ?? ""),
 					region,
 					postalCode,
 					country,
@@ -724,6 +766,11 @@ export const cartRoutes = {
 	 * requires the postcode only for one listed in `postcodes` (the
 	 * countries where a zone lists postcodes), so shops without regional
 	 * or postcode zones see no change.
+	 *
+	 * `shipsTo` lists the countries the zones cover (every country in the
+	 * table when no zone lists one), for the country dropdown, and `areas`
+	 * the areas zones list, by country: `{ KE: { country: [...], regions:
+	 * { "30": ["Kilimani", "Westlands"] } } }`.
 	 */
 	"cart/shipping-regions": {
 		public: true,
@@ -750,7 +797,13 @@ export const cartRoutes = {
 						.sort((a, b) => a.name.localeCompare(b.name)),
 				};
 			}
-			return jsonResponse({ countries, postcodes: zonePostcodeCountries(zones) });
+			const covered = zoneCountries(zones);
+			return jsonResponse({
+				countries,
+				postcodes: zonePostcodeCountries(zones),
+				shipsTo: covered.length > 0 ? covered : COUNTRY_TABLE.map((c) => c.code),
+				areas: zoneAreas(zones),
+			});
 		},
 	},
 
@@ -793,14 +846,16 @@ export const cartRoutes = {
 			...r.data,
 			id: r.id,
 		}));
-		const zone = pickZone(cart.shippingAddress, zones);
-		if (!zone) return jsonResponse({ options: [] }, withSessionCookie(setCookie));
 		// Fetch all methods and filter in JS — EmDash's .where builds SQLite-style
 		// SQL that breaks on Postgres (syntax error near "="). This fetch+filter
 		// approach works across both databases.
-		const methods = (await methodsStore.query({ limit: 200 })).items
-			.map((r) => ({ ...r.data, id: r.id }))
-			.filter((m) => m.zoneId === zone.id && (m.enabled === true || (m.enabled as unknown) === 1));
+		const offered = methodsForAddress(
+			cart.shippingAddress,
+			zones,
+			(await methodsStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id })),
+		);
+		if (!offered) return jsonResponse({ options: [] }, withSessionCookie(setCookie));
+		const methods = offered.methods;
 
 			const options = calculateRates({
 				items: cart.items,
@@ -850,16 +905,18 @@ export const cartRoutes = {
 			...r.data,
 			id: r.id,
 		}));
-		const zone = pickZone(cart.shippingAddress, zones);
-		if (!zone) {
-			return errorResponse("No shipping zone matches the address", 409, setCookie);
-		}
 		// Fetch all methods and filter in JS — EmDash's .where builds SQLite-style
 		// SQL that breaks on Postgres (syntax error near "="). This fetch+filter
 		// approach works across both databases.
-		const methods = (await methodsStore.query({ limit: 200 })).items
-			.map((r) => ({ ...r.data, id: r.id }))
-			.filter((m) => m.zoneId === zone.id && (m.enabled === true || (m.enabled as unknown) === 1));
+		const offered = methodsForAddress(
+			cart.shippingAddress,
+			zones,
+			(await methodsStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id })),
+		);
+		if (!offered) {
+			return errorResponse("No shipping zone matches the address", 409, setCookie);
+		}
+		const methods = offered.methods;
 			const options = calculateRates({
 				items: cart.items,
 				currency: cart.currency,

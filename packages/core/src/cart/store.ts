@@ -79,8 +79,11 @@ export function switchCurrency(cart: CartState, currency: CurrencyCode): CartSta
 		throw new Error("Cannot switch currency on a non-empty cart. Clear first.");
 	}
 	const cc = currency.toUpperCase();
+	// A chosen shipping method is priced in the old currency: drop it, so
+	// `cart/shipping-methods` quotes again in the new one.
+	const { shippingMethod: _stale, ...rest } = cart;
 	return {
-		...cart,
+		...rest,
 		currency: cc,
 		subtotal: money(cc, 0),
 		discountTotal: money(cc, 0),
