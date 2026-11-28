@@ -115,7 +115,7 @@ function failureText(sale: SaleState): string {
 }
 
 /** The notice staff see on every counter screen. */
-function PaidOnlyHere() {
+export function PaidOnlyHere() {
 	return (
 		<Alert type="warning" title="Paid means this screen says Paid">
 			A sale is paid only when this screen says Paid — never because of a customer's SMS or
@@ -125,7 +125,7 @@ function PaidOnlyHere() {
 }
 
 /** The payment link as a QR code, drawn here from the page's own code. */
-function PaymentQr({ url }: { url: string }) {
+export function PaymentQr({ url }: { url: string }) {
 	const drawn = useMemo(() => {
 		try {
 			const code = encodeQr(url);
@@ -185,7 +185,7 @@ async function copyText(text: string): Promise<boolean> {
 	}
 }
 
-function ShareLink({ sale, share, email }: { sale: SaleState; share: ShareInput; email: string }) {
+export function ShareLink({ sale, share, email }: { sale: SaleState; share: ShareInput; email: string }) {
 	const [copied, setCopied] = useState<"yes" | "no" | null>(null);
 	return (
 		<div style={{ display: "grid", gap: 12, marginTop: 12 }}>
