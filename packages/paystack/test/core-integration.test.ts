@@ -108,7 +108,7 @@ function fakePaystack(options: FakePaystackOptions = {}) {
 		}
 	>();
 	const terminalEvents: Array<{ path: string; body: unknown }> = [];
-	/** Split groups created with POST /split, by code. */
+	/** Split groups created with POST /split, by code (counter sales must create none). */
 	const splits = new Map<string, Record<string, unknown>>();
 	let outagesLeft = options.verifyOutages ?? 0;
 	let verifyCalls = 0;
@@ -2016,7 +2016,7 @@ describe("@dashcommerce/paystack counter sales through core", () => {
 		});
 	});
 
-	it("an M-PESA prompt with a vendor's product saves the split and charges with its code", async () => {
+	it("records the vendor's share from Paystack's verify when the status check creates the order first", async () => {
 		const paystack = fakePaystack();
 		const { ctx, getCol } = makeContext(
 			{ ...counterSettings, "settings:defaultCurrency": "KES" },
@@ -2026,30 +2026,72 @@ describe("@dashcommerce/paystack counter sales through core", () => {
 
 		const started = await counterCall(ctx, "admin/counter/sale", {
 			input: {
+				lines: [
+					{ productId: "prod_vendor_scarf", quantity: 1 },
+					{ productId: "prod_ticket", quantity: 1 },
+				],
+				method: { type: "link" },
+			},
+		});
+		const draft = String(started.body.orderDraftId);
+		// Paid; /transaction/verify reports the split before any webhook arrives.
+		const tx = paystack.transactions.get(`dc-${draft}`) as Record<string, unknown> | undefined;
+		if (!tx) throw new Error("initialize did not register a transaction");
+		tx.split = {
+			split_code: "SPL_dynamic",
+			shares: {
+				paystack: 5250,
+				integration: 164750,
+				subaccounts: [{ amount: 180000, subaccount_code: "ACCT_v1" }],
+			},
+		};
+		const status = await counterCall(ctx, "admin/counter/status", {
+			method: "GET",
+			query: `?draft=${draft}`,
+		});
+		expect(status.body.status).toBe("paid");
+
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.providerSplits).toMatchObject({
+			providerId: "paystack",
+			allocations: [
+				{ vendorId: "v1", accountReference: "ACCT_v1", amount: { amount: 180000, currency: "KES" } },
+			],
+			platformRemainder: { amount: 164750, currency: "KES" },
+			providerFee: { amount: 5250, currency: "KES" },
+		});
+
+		// The webhook arriving afterwards changes nothing.
+		const charge = JSON.parse(chargeSuccess(`dc-${draft}`, draft, Number(tx.id), 350000)) as {
+			data: Record<string, unknown>;
+		};
+		const payload = JSON.stringify(charge);
+		await deliverWebhook(ctx, payload, await sign(SECRET_KEY, payload));
+		expect(getCol("orders").size).toBe(1);
+	});
+
+	it("a vendor's product is offered by link only: no M-PESA prompt and no saved split", async () => {
+		const paystack = fakePaystack();
+		const { ctx, getCol } = makeContext(
+			{ ...counterSettings, "settings:defaultCurrency": "KES" },
+			paystack.fetch,
+		);
+		getCol("vendors").set("v1", vendorOnPaystack());
+
+		const setup = await counterCall(ctx, "admin/counter/setup", { method: "GET" });
+		expect(setup.body.splitMethods).toEqual(["link"]);
+		const started = await counterCall(ctx, "admin/counter/sale", {
+			input: {
 				lines: [{ productId: "prod_vendor_scarf", quantity: 1 }],
 				method: { type: "phone", phone: "0710 000 000" },
 			},
 		});
-		expect(started.status).toBe(200);
-		const draft = String(started.body.orderDraftId);
-		expect([...paystack.splits.entries()]).toEqual([
-			[
-				"SPL_fake1",
-				{
-					name: `Counter sale ${draft}`,
-					type: "flat",
-					currency: "KES",
-					subaccounts: [{ subaccount: "ACCT_v1", share: 180000 }],
-					bearer_type: "account",
-				},
-			],
-		]);
-		expect(paystack.getLastCharge()).toMatchObject({
-			amount: 200000,
-			reference: `dc-${draft}`,
-			split_code: "SPL_fake1",
-			mobile_money: { phone: "+254710000000", provider: "mpesa" },
-		});
+		expect(started.status).toBe(409);
+		expect(String((started.body.error as { message: string }).message)).toBe(
+			"Vendor scarf belongs to a vendor; take payment by Pay on their phone.",
+		);
+		expect(paystack.splits.size).toBe(0);
+		expect(paystack.getLastCharge()).toBeNull();
 	});
 
 	it("a vendor's product can't go to a card terminal", async () => {

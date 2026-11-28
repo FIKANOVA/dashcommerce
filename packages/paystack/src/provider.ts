@@ -163,6 +163,8 @@ interface PaystackVerifyData {
 	/** A plan code, or a plan object, when the charge belongs to a plan. */
 	plan?: unknown;
 	plan_object?: unknown;
+	/** Present when the payment was split, as on `charge.success`. */
+	split?: PaystackWebhookEvent["data"]["split"];
 }
 
 interface PaystackRefundData {
@@ -946,36 +948,6 @@ const PHONE_PROVIDER: Record<string, string> = { KES: "mpesa" };
 const TERMINAL_CURRENCIES = new Set(["NGN", "GHS", "ZAR", "USD"]);
 
 /**
- * A vendor split for a phone prompt. `/charge` takes no inline split (only
- * `split_code` or a single `subaccount`), so the shares core worked out are
- * saved as a flat split for this one sale first, on the same terms as the
- * inline split online checkout sends: each vendor's subaccount gets its
- * share and the shop keeps the rest and pays Paystack's fee.
- */
-async function splitCodeFor(
-	ctx: PaymentProviderRuntimeContext,
-	client: PaystackClientOptions,
-	input: StartInPersonPaymentInput,
-	currency: string,
-): Promise<string | undefined> {
-	const split = splitFor(input);
-	if (!split) return undefined;
-	const data = await call<{ split_code?: string }>(ctx, {
-		client,
-		path: "/split",
-		body: {
-			name: `Counter sale ${input.orderDraftId}`,
-			type: split.type,
-			currency,
-			subaccounts: split.subaccounts,
-			bearer_type: split.bearer_type,
-		},
-	});
-	if (!data.split_code) throw new Error("Paystack returned no split code");
-	return data.split_code;
-}
-
-/**
  * "Pay on their phone": a transaction for the exact sale total, with the
  * same reference, metadata and vendor split as online checkout. Its
  * `authorization_url` is Paystack's own checkout page, offering whatever
@@ -1078,7 +1050,11 @@ async function startPhonePayment(
 		throw new Error("Paystack phone prompts are for M-PESA in Kenya (KES) only for now");
 	}
 	const reference = paystackReferenceFor(input.orderDraftId);
-	const splitCode = await splitCodeFor(ctx, client, input, currency);
+	// /charge takes no inline split (only a saved split_code or a single
+	// subaccount), so core offers vendor products by link only.
+	if (input.allocations && input.allocations.length > 0) {
+		throw new Error("An M-PESA prompt can't be split between vendors; use Pay on their phone");
+	}
 	const data = await call<PaystackChargeData>(ctx, {
 		client,
 		path: "/charge",
@@ -1089,7 +1065,6 @@ async function startPhonePayment(
 			reference,
 			metadata: { ...input.metadata, orderDraftId: input.orderDraftId, channel: "in_person" },
 			mobile_money: { phone: paystackPhone(input.method.phone, currency), provider },
-			...(splitCode ? { split_code: splitCode } : {}),
 		},
 	});
 	const status = chargeStatus(data.status);
@@ -1241,10 +1216,12 @@ export const paystackPaymentProvider: PaymentProvider = {
 	// Counter sales: an M-PESA prompt on the customer's phone, Paystack's
 	// own checkout page opened on their phone (a QR code or shared link), or
 	// a card terminal (core offers terminals only when listTerminals returns
-	// some). A vendor's product can be sold by prompt or link: both carry
-	// the split; a payment request (terminal) can't.
+	// some). A vendor's product is sold by link only: initialize takes an
+	// inline split, while /charge takes only a saved split_code (which would
+	// leave a split group per sale in the dashboard) and a terminal's
+	// payment request takes none.
 	inPersonMethods: ["phone", "terminal", "link"],
-	inPersonSplitMethods: ["phone", "link"],
+	inPersonSplitMethods: ["link"],
 	inPersonCurrencies: {
 		phone: Object.keys(PHONE_PROVIDER),
 		terminal: [...TERMINAL_CURRENCIES],
@@ -1557,11 +1534,16 @@ export const paystackPaymentProvider: PaymentProvider = {
 			}
 		}
 		const planCode = planCodeOf(data.plan, data.plan_object);
+		const splitSettlement =
+			status === "succeeded" && data.currency
+				? splitSettlementFrom(data.split, data.currency.toUpperCase())
+				: undefined;
 		return {
 			status: status ?? "pending",
 			paymentReference: data.reference,
 			amount: data.amount,
 			currency: data.currency?.toUpperCase(),
+			...(splitSettlement ? { splitSettlement } : {}),
 			reason: status ? data.gateway_response : `Unrecognised Paystack status: ${data.status}`,
 			...(planCode
 				? {

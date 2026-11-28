@@ -68,7 +68,7 @@ const start = paystackPaymentProvider.startInPersonPayment as NonNullable<
 describe("Paystack counter sales", () => {
 	it("declares phone, terminal and link, which split, and their currencies", () => {
 		expect(paystackPaymentProvider.inPersonMethods).toEqual(["phone", "terminal", "link"]);
-		expect(paystackPaymentProvider.inPersonSplitMethods).toEqual(["phone", "link"]);
+		expect(paystackPaymentProvider.inPersonSplitMethods).toEqual(["link"]);
 		expect(paystackPaymentProvider.inPersonCurrencies).toEqual({
 			phone: ["KES"],
 			terminal: ["NGN", "GHS", "ZAR", "USD"],
@@ -176,27 +176,20 @@ describe("Paystack counter sales", () => {
 			});
 		});
 
-		it("saves a vendor split for the sale and charges with its code", async () => {
+		it("refuses to split an M-PESA prompt between vendors, before calling Paystack", async () => {
 			const { ctx, calls } = stand({
-				"POST /split": { split_code: "SPL_counter1" },
 				"POST /charge": { reference: `dc-${DRAFT}`, status: "pay_offline" },
 			});
-			await start(
-				ctx,
-				input({
-					allocations: [{ vendorId: "v1", accountReference: "ACCT_v1", amountMinor: 90000 }],
-				}),
-				credentials,
-			);
-			expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /split", "POST /charge"]);
-			expect(calls[0]?.body).toEqual({
-				name: `Counter sale ${DRAFT}`,
-				type: "flat",
-				currency: "KES",
-				subaccounts: [{ subaccount: "ACCT_v1", share: 90000 }],
-				bearer_type: "account",
-			});
-			expect(calls[1]?.body?.split_code).toBe("SPL_counter1");
+			await expect(
+				start(
+					ctx,
+					input({
+						allocations: [{ vendorId: "v1", accountReference: "ACCT_v1", amountMinor: 90000 }],
+					}),
+					credentials,
+				),
+			).rejects.toThrow(/Pay on their phone/);
+			expect(calls).toHaveLength(0);
 		});
 
 		it("reports a charge Paystack refuses at once", async () => {
