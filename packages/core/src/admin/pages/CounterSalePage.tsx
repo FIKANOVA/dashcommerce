@@ -253,6 +253,8 @@ export function CounterSalePage() {
 	/** A failed attempt the staff member went back to change; the next payment retries it. */
 	const [changedFrom, setChangedFrom] = useState<string | null>(null);
 	const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** Bumped whenever checking stops, so an answer already on its way is ignored. */
+	const pollGeneration = useRef(0);
 	/** The counter closed after a spell without use. */
 	const [closed, setClosed] = useState(false);
 	const lastActivity = useRef(Date.now());
@@ -293,6 +295,7 @@ export function CounterSalePage() {
 	const stopPolling = useCallback(() => {
 		if (pollTimer.current) clearTimeout(pollTimer.current);
 		pollTimer.current = null;
+		pollGeneration.current += 1;
 	}, []);
 
 	useEffect(() => stopPolling, [stopPolling]);
@@ -340,12 +343,16 @@ export function CounterSalePage() {
 
 	const poll = useCallback(
 		(orderDraftId: string) => {
+			const generation = pollGeneration.current;
 			pollTimer.current = setTimeout(async () => {
 				try {
 					const next = await api.get<SaleState>("admin/counter/status", { draft: orderDraftId });
+					// Checking stopped (counter closed or a new sale) while this was on its way.
+					if (generation !== pollGeneration.current) return;
 					setSale(next);
 					if (keepChecking(next)) poll(orderDraftId);
 				} catch (err) {
+					if (generation !== pollGeneration.current) return;
 					if (isPermanent(err)) {
 						setSaleError(`Stopped checking: ${errorText(err)}`);
 						return;
