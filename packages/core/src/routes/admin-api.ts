@@ -35,7 +35,9 @@ import type {
 import { refundOrder } from "../orders/refund";
 import { sendReviewRequest } from "../emails";
 import { normalizeProductFields } from "../products/normalize";
-import { parsePostcodeEntry, POSTCODE_MAX_ENTRIES } from "../shipping/postcodes";
+import { isPlausiblePostcode, parsePostcodeEntry, POSTCODE_MAX_ENTRIES } from "../shipping/postcodes";
+import { areaError, parseAreaList, tidyArea } from "../shipping/areas";
+import { calculateRates, checkedRegion, methodsForAddress } from "../shipping/calculate";
 import { recomputeSummary } from "../reviews/moderate";
 import { moderateReview } from "../reviews/moderate";
 import { cancel, pause, resume } from "../subscriptions/lifecycle";
@@ -695,6 +697,77 @@ async function listShippingZones(ctx: PluginContext): Promise<Response> {
 	});
 }
 
+/**
+ * "Check an address": which zone an address matches, why, and the options
+ * a shopper there would be offered in each currency the shop uses. Uses
+ * checkout's own matching (`matchZone`, `calculateRates`) and writes
+ * nothing. Rates are for a basket worth nothing, so a free-shipping method
+ * with a minimum is not among them.
+ */
+async function checkShippingAddress(
+	ctx: PluginContext,
+	routeCtx: RouteContext,
+): Promise<Response> {
+	const input = (routeCtx.input ?? {}) as Record<string, unknown>;
+	const text = (key: string): string | null => {
+		const value = input[key];
+		if (value === undefined || value === null) return "";
+		return typeof value === "string" ? value.trim() : null;
+	};
+	const country = text("country")?.toUpperCase() ?? "";
+	if (!/^[A-Z]{2}$/.test(country)) {
+		return json({ error: "country must be a 2-letter ISO-3166 code" }, 400);
+	}
+	const region = text("region");
+	if (region === null || region.length > 64) {
+		return json({ error: "region must be a short text code" }, 400);
+	}
+	const postalCode = text("postalCode");
+	if (postalCode === null || !isPlausiblePostcode(postalCode)) {
+		return json({ error: "postalCode must be up to 16 letters, digits, spaces or hyphens" }, 400);
+	}
+	const area = text("area");
+	const badArea = area === null ? "must be text" : areaError(area);
+	if (area === null || badArea) return json({ error: `area ${badArea}` }, 400);
+
+	const zones = (
+		await storeOf<ShippingZone>(ctx, "shipping_zones").query({ limit: 200 })
+	).items.map((r) => ({ ...(r.data as ShippingZone), id: r.id }));
+	const address = {
+		firstName: "",
+		lastName: "",
+		line1: "",
+		city: tidyArea(area),
+		region: checkedRegion(country, region, zones),
+		postalCode,
+		country,
+	};
+	const match = methodsForAddress(
+		address,
+		zones,
+		(await storeOf<ShippingMethod>(ctx, "shipping_methods").query({ limit: 500 })).items.map(
+			(r) => ({ ...(r.data as ShippingMethod), id: r.id }),
+		),
+	);
+	if (!match) return json({ address, zone: null, reason: null, currencies: [] });
+	const methods = match.methods;
+	const currencies = new Set<string>(
+		normalizeCurrencyList((await ctx.kv.get<unknown>("settings:enabledCurrencies")) ?? []),
+	);
+	const fallback = await ctx.kv.get<string>("settings:defaultCurrency");
+	if (typeof fallback === "string" && fallback) currencies.add(fallback.toUpperCase());
+	if (currencies.size === 0) currencies.add("USD");
+	return json({
+		address,
+		zone: { id: match.zone.id, name: match.zone.name },
+		reason: match.reason,
+		currencies: [...currencies].sort().map((currency) => ({
+			currency,
+			options: calculateRates({ items: [], currency, methods }),
+		})),
+	});
+}
+
 async function listTaxRates(ctx: PluginContext): Promise<Response> {
 	const result = await storeOf<TaxRate>(ctx, "tax_rates").query({
 		orderBy: { priority: "asc" },
@@ -879,7 +952,12 @@ function validateShippingZone(
 			) {
 				return { ok: false, error: "each location needs a country code" };
 			}
-			const l = loc as { country: string; regions?: unknown; postcodes?: unknown };
+			const l = loc as {
+				country: string;
+				regions?: unknown;
+				postcodes?: unknown;
+				areas?: unknown;
+			};
 			if (!/^[A-Z]{2}$/.test(l.country)) {
 				return {
 					ok: false,
@@ -903,6 +981,11 @@ function validateShippingZone(
 				const postcodes = validateZonePostcodes(l.country, l.postcodes);
 				if (!postcodes.ok) return postcodes;
 				if (postcodes.value.length > 0) location.postcodes = postcodes.value;
+			}
+			if (l.areas !== undefined) {
+				const areas = parseAreaList(l.areas);
+				if (!areas.ok) return { ok: false, error: `${l.country}: ${areas.error}` };
+				if (areas.value.length > 0) location.areas = areas.value;
 			}
 			locations.push(location);
 		}
@@ -2352,6 +2435,13 @@ export const adminApiRoutes = {
 			if (routeCtx.request.method === "DELETE")
 				return deleteShippingZone(ctx, id);
 			return json({ error: "Method not allowed" }, 405);
+		},
+	},
+	"admin/shipping/check": {
+		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			if (!isAdmin(routeCtx)) return adminOnly("Only an admin can check shipping addresses.");
+			if (routeCtx.request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+			return checkShippingAddress(getCtx(routeCtx, _c), routeCtx);
 		},
 	},
 	"admin/shipping/methods": {

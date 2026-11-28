@@ -7,7 +7,7 @@
 
 import type { PluginContext } from "emdash";
 import type { CartState, ShippingMethod, ShippingZone } from "../types";
-import { calculateRates, pickZone } from "./calculate";
+import { calculateRates, methodsForAddress } from "./calculate";
 
 /**
  * Pure helper: re-quote given methods already loaded (for unit tests).
@@ -75,18 +75,14 @@ export async function requoteShipping(
 		...r.data,
 		id: r.id,
 	}));
-	const zone = pickZone(cart.shippingAddress, zones);
-	if (!zone) {
+	const offered = methodsForAddress(
+		cart.shippingAddress,
+		zones,
+		(await methodsStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id })),
+	);
+	if (!offered) {
 		return { ...cart, shippingMethod: undefined };
 	}
 
-	const methods = (await methodsStore.query({ limit: 200 })).items
-		.map((r) => ({ ...r.data, id: r.id }))
-		.filter(
-			(m) =>
-				m.zoneId === zone.id &&
-				(m.enabled === true || (m.enabled as unknown) === 1),
-		);
-
-	return requoteShippingMethod(cart, methods);
+	return requoteShippingMethod(cart, offered.methods);
 }

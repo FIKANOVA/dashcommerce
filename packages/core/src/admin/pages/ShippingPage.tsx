@@ -34,6 +34,7 @@ import {
 } from "../kit";
 import { EmptyState } from "../ui/EmptyState";
 import type {
+	Money,
 	PickupDetails,
 	ShippingClass,
 	ShippingMethod,
@@ -234,6 +235,8 @@ export function ShippingPage() {
 				)}
 			</Card>
 
+			<CheckAddressCard zones={data.zones} />
+
 			<Card title="Shipping classes">
 				<div
 					style={{
@@ -424,7 +427,13 @@ function ZoneCard({
 							parts.push(l.regions.map((r) => regionName(l.country, r)).join(", "));
 						}
 						if (l.postcodes && l.postcodes.length > 0) {
-							parts.push(`postcodes ${l.postcodes.join(", ")}`);
+							const shown = l.postcodes.map((p) =>
+								p.endsWith(" ") ? `${p.trim()} (exact)` : p,
+							);
+							parts.push(`postcodes ${shown.join(", ")}`);
+						}
+						if (l.areas && l.areas.length > 0) {
+							parts.push(`areas ${l.areas.join(", ")}`);
 						}
 						return parts.length > 0 ? `${l.country} (${parts.join("; ")})` : l.country;
 					})
@@ -616,10 +625,22 @@ function ZoneEditor({
 			initial?.locations.map((l) => [l.country, (l.postcodes ?? []).join(", ")]) ?? [],
 		),
 	);
+	// A trailing space is kept: `SW1 ` means that outward code only.
 	const postcodesFor = (country: string): string[] =>
 		(postcodeText[country] ?? "")
 			.split(/[,\n]/)
-			.map((p) => p.trim())
+			.map((p) => p.replace(/^\s+/, "").replace(/\s+$/, " "))
+			.filter((p) => p.trim() !== "");
+	// Delivery areas by country, as typed. The server checks and tidies them.
+	const [areaText, setAreaText] = useState<Record<string, string>>(() =>
+		Object.fromEntries(
+			initial?.locations.map((l) => [l.country, (l.areas ?? []).join(", ")]) ?? [],
+		),
+	);
+	const areasFor = (country: string): string[] =>
+		(areaText[country] ?? "")
+			.split(/[,\n]/)
+			.map((a) => a.trim())
 			.filter(Boolean);
 	const [order, setOrder] = useState<number | null>(initial?.order ?? 0);
 	const [saving, setSaving] = useState(false);
@@ -641,10 +662,12 @@ function ZoneEditor({
 						locations: countries.map((c) => {
 							const codes = regionsFor(c);
 							const postcodes = postcodesFor(c);
+							const areas = areasFor(c);
 							return {
 								country: c as ShippingZone["locations"][number]["country"],
 								...(codes.length > 0 ? { regions: codes } : {}),
 								...(postcodes.length > 0 ? { postcodes } : {}),
+								...(areas.length > 0 ? { areas } : {}),
 							};
 						}),
 						order: order ?? 0,
@@ -717,8 +740,9 @@ function ZoneEditor({
 					key={country}
 					label={`Postcodes in ${getCountryName(country)}`}
 					description={
-						"Optional. Prefixes (00100, SW1) or ranges (1000-1999), separated by commas or new lines. " +
-						`When a zone lists some, checkout asks customers in ${getCountryName(country)} for their postcode.`
+						"Optional. Prefixes (00100, SW1), ranges (1000-1999), or an outward code followed by a space " +
+						"(\"SW1 \") for that code only, separated by commas or new lines. " +
+						`When a zone lists some, checkout offers customers in ${getCountryName(country)} a postcode field for local rates; it is never required.`
 					}
 					htmlFor={`zone-postcodes-${country}`}
 				>
@@ -736,6 +760,39 @@ function ZoneEditor({
 					/>
 				</FormField>
 			))}
+			{countries.map((country) => {
+				const within = regionsFor(country);
+				const where =
+					within.length > 0
+						? `${within.map((r) => regionName(country, r)).join(", ")}, ${getCountryName(country)}`
+						: getCountryName(country);
+				return (
+					<FormField
+						key={country}
+						label={`Areas in ${where}`}
+						description={
+							"Optional. Towns, districts or estates you deliver to (Westlands, Kilimani), separated by commas or new lines. " +
+							"When a zone lists some, checkout offers them in an Area dropdown, with \"Somewhere else\" for the rest. " +
+							"An area match comes before a postcode, region or country-wide one."
+						}
+						htmlFor={`zone-areas-${country}`}
+					>
+						<textarea
+							id={`zone-areas-${country}`}
+							value={areaText[country] ?? ""}
+							onChange={(e) => {
+								const text = e.currentTarget.value;
+								setAreaText((prev) => ({ ...prev, [country]: text }));
+							}}
+							rows={2}
+							maxLength={20000}
+							placeholder="e.g. Westlands, Kilimani, CBD"
+							disabled={saving}
+							style={textareaStyle}
+						/>
+					</FormField>
+				);
+			})}
 			<FormField
 				label="Order"
 				description="Lower numbers are evaluated first. Use this when zones overlap."
@@ -750,6 +807,170 @@ function ZoneEditor({
 				/>
 			</FormField>
 		</EditorShell>
+	);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Check an address — which zone and rates a shopper would get
+// ────────────────────────────────────────────────────────────────────────────
+
+interface AddressCheck {
+	zone: { id: string; name: string } | null;
+	reason: "area" | "postcode" | "region" | "country" | null;
+	currencies: Array<{ currency: string; options: Array<{ methodId: string; label: string; amount: Money }> }>;
+}
+
+const REASON_TEXT: Record<NonNullable<AddressCheck["reason"]>, string> = {
+	area: "it lists this area",
+	postcode: "it lists this postcode",
+	region: "it lists this region",
+	country: "it covers the whole country",
+};
+
+/**
+ * Read-only: asks `admin/shipping/check`, which runs checkout's own zone
+ * matching and rate calculation for the address.
+ */
+function CheckAddressCard({ zones }: { zones: ShippingZone[] }) {
+	const api = usePluginAPI();
+	const countryOpts = useMemo(() => countryOptions(), []);
+	const firstCountry = zones.flatMap((z) => z.locations.map((l) => l.country))[0] ?? null;
+	const [country, setCountry] = useState<string | null>(firstCountry);
+	const [region, setRegion] = useState("");
+	const [area, setArea] = useState("");
+	const [postalCode, setPostalCode] = useState("");
+	const [result, setResult] = useState<AddressCheck | null>(null);
+	const [checking, setChecking] = useState(false);
+	const ids = useId();
+	const table = country ? REGION_TABLE[country] : undefined;
+
+	async function check() {
+		if (!country) return;
+		setChecking(true);
+		try {
+			setResult(
+				await api.post<AddressCheck>("admin/shipping/check", {
+					country,
+					region,
+					area,
+					postalCode,
+				}),
+			);
+		} catch (err) {
+			setResult(null);
+			toast.error("Check failed", err instanceof Error ? err.message : undefined);
+		} finally {
+			setChecking(false);
+		}
+	}
+
+	return (
+		<Card title="Check an address">
+			<p style={{ margin: "0 0 8px", color: T.textMuted, fontSize: "0.9em" }}>
+				See which zone an address gets, why, and the options a shopper there would be offered in
+				each currency. Nothing is saved.
+			</p>
+			<div
+				style={{
+					display: "grid",
+					gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))",
+					gap: 8,
+				}}
+			>
+				<FormField label="Country" htmlFor={`${ids}-country`}>
+					<Combobox
+						id={`${ids}-country`}
+						value={country}
+						onChange={(next) => {
+							setCountry(next);
+							setRegion("");
+						}}
+						options={countryOpts}
+						placeholder="Choose a country…"
+					/>
+				</FormField>
+				<FormField label={country ? regionLabel(country) : "Region"} htmlFor={`${ids}-region`}>
+					{table ? (
+						<Select
+							id={`${ids}-region`}
+							value={region}
+							onChange={(e) => setRegion(e.currentTarget.value)}
+						>
+							<option value="">Elsewhere / not given</option>
+							{table.regions.map((r) => (
+								<option key={r.code} value={r.code}>
+									{r.name}
+								</option>
+							))}
+						</Select>
+					) : (
+						<Input
+							id={`${ids}-region`}
+							value={region}
+							onChange={(e) => setRegion(e.currentTarget.value)}
+							maxLength={64}
+							placeholder="Code, optional"
+						/>
+					)}
+				</FormField>
+				<FormField label="Area" htmlFor={`${ids}-area`}>
+					<Input
+						id={`${ids}-area`}
+						value={area}
+						onChange={(e) => setArea(e.currentTarget.value)}
+						maxLength={80}
+						placeholder="e.g. Westlands, optional"
+					/>
+				</FormField>
+				<FormField label="Postcode" htmlFor={`${ids}-postcode`}>
+					<Input
+						id={`${ids}-postcode`}
+						value={postalCode}
+						onChange={(e) => setPostalCode(e.currentTarget.value)}
+						maxLength={16}
+						placeholder="Optional"
+					/>
+				</FormField>
+			</div>
+			<Button variant="primary" onClick={check} disabled={!country || checking}>
+				{checking ? "Checking…" : "Check"}
+			</Button>
+			{result && (
+				<div aria-live="polite" style={{ marginTop: 12 }}>
+					{result.zone && result.reason ? (
+						<>
+							<p style={{ margin: "0 0 8px" }}>
+								Zone <strong>{result.zone.name}</strong>, because {REASON_TEXT[result.reason]}.
+							</p>
+							{result.currencies.map((c) => (
+								<div key={c.currency} style={{ marginBottom: 8 }}>
+									<strong style={{ fontSize: "0.9em" }}>{c.currency}</strong>
+									{c.options.length === 0 ? (
+										<p style={{ margin: "2px 0 0", color: T.textMuted, fontSize: "0.85em" }}>
+											No method has a price in {c.currency}, so shoppers paying in it see no options.
+										</p>
+									) : (
+										<ul style={{ margin: "2px 0 0", paddingLeft: 18 }}>
+											{c.options.map((o) => (
+												<li key={o.methodId}>
+													{o.label}:{" "}
+													<MoneyMinor amount={o.amount.amount} currency={o.amount.currency} />
+												</li>
+											))}
+										</ul>
+									)}
+								</div>
+							))}
+							<p style={{ margin: 0, color: T.textMuted, fontSize: "0.85em" }}>
+								Free shipping with a minimum order isn't listed: it depends on the basket.
+							</p>
+						</>
+					) : (
+						<p style={{ margin: 0 }}>No zone matches this address, so a shopper there sees no shipping options.</p>
+					)}
+				</div>
+			)}
+		</Card>
 	);
 }
 

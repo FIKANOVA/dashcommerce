@@ -446,8 +446,9 @@ export interface CouponUsage {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Where a zone delivers. With neither `regions` nor `postcodes` it covers
- * the whole country; with both, an address must match one of each.
+ * Where a zone delivers. With none of `regions`, `postcodes` or `areas` it
+ * covers the whole country; with more than one, an address must match one
+ * of each.
  */
 export interface ShippingZoneLocation {
 	country: CountryCode;
@@ -457,6 +458,12 @@ export interface ShippingZoneLocation {
 	 * (`1000-1999`), stored without case or spaces. See `shipping/postcodes`.
 	 */
 	postcodes?: string[];
+	/**
+	 * Towns, districts or estates delivered to (`Westlands`, `Lekki`),
+	 * matched against the address's `city` without case, accents or extra
+	 * spaces. See `shipping/areas`.
+	 */
+	areas?: string[];
 }
 
 export interface ShippingZone {

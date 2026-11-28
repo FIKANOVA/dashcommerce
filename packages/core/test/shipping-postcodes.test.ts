@@ -355,11 +355,15 @@ describe("the hosted checkout form", () => {
 		"utf8",
 	);
 
-	it("marks the postcode optional, and required only in the countries listed", () => {
-		expect(form).toContain('Postal code <small id="hc-postal-hint">(optional)</small>');
+	// The postcode used to be required where a zone listed postcodes, which
+	// blocked pickup-only shoppers. It is now offered there and never required.
+	it("offers the postcode only in the countries listed, and never requires it", () => {
+		expect(form).toContain('Postcode <small id="hc-postal-hint">(for local rates)</small>');
 		expect(form).toContain("postcodeCountries = body.postcodes ?? [];");
-		expect(form).toContain("const required = postcodeCountries.includes(country);");
-		expect(form).toContain("postalInput.required = required;");
+		expect(form).toContain("const offered = postcodeCountries.includes(currentCountry());");
+		expect(form).toContain("postalField.hidden = !offered;");
+		expect(form).toContain("postalInput.required = false;");
+		expect(form).not.toContain("postalInput.required = required;");
 	});
 
 	it("re-quotes when the postcode changes after rates are shown", () => {
