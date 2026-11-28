@@ -9,6 +9,7 @@ import type {
 	InitCheckoutResult,
 	NormalizedPaymentEvent,
 	PaymentProvider,
+	InPersonMethodType,
 	PaymentProviderCapabilities,
 	PaymentProviderTerminal,
 	PaymentStatusResult,
@@ -36,11 +37,16 @@ export interface MockPaymentProviderOptions {
 	paymentStatus?: (paymentReference: string) => PaymentStatusResult;
 	/** Take counter sales by these methods. */
 	inPerson?: {
-		methods: Array<"phone" | "terminal">;
+		methods: InPersonMethodType[];
+		/** Methods that can carry a vendor split. */
+		splitMethods?: InPersonMethodType[];
 		terminals?: PaymentProviderTerminal[];
 		/** Called with each in-person payment core starts. */
 		onStart?: (input: StartInPersonPaymentInput) => void;
-		/** Defaults to `pending` with reference `mock_counter_<draft>`. */
+		/**
+		 * Defaults to `pending` with reference `mock_counter_<draft>`, and a
+		 * `https://pay.mock.test/<draft>` payment page for the `link` method.
+		 */
 		result?: Partial<StartInPersonPaymentResult>;
 	};
 }
@@ -209,6 +215,9 @@ export function createMockPaymentProvider(
 		...(options.inPerson
 			? {
 					inPersonMethods: options.inPerson.methods,
+					...(options.inPerson.splitMethods
+						? { inPersonSplitMethods: options.inPerson.splitMethods }
+						: {}),
 					async listTerminals(): Promise<PaymentProviderTerminal[]> {
 						return options.inPerson?.terminals ?? [];
 					},
@@ -220,6 +229,9 @@ export function createMockPaymentProvider(
 						return {
 							paymentReference: `mock_counter_${input.orderDraftId}`,
 							status: "pending",
+							...(input.method.type === "link"
+								? { paymentUrl: `https://pay.mock.test/${input.orderDraftId}` }
+								: {}),
 							...options.inPerson?.result,
 						};
 					},

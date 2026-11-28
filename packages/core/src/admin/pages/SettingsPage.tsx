@@ -40,7 +40,8 @@ type Group =
 	| "downloads"
 	| "marketing"
 	| "connect"
-	| "stripe";
+	| "stripe"
+	| "counter";
 
 interface GroupSpec {
 	id: Group;
@@ -64,6 +65,12 @@ const GROUPS: GroupSpec[] = [
 		id: "stripe",
 		title: "Stripe",
 		description: "API keys used for charges, refunds, and webhook verification.",
+	},
+	{
+		id: "counter",
+		title: "Counter sales",
+		description:
+			"Let editors and admins sell in person from Counter sale. Off until you turn it on; while off, Counter sale is hidden.",
 	},
 	{
 		id: "reviews",
@@ -112,6 +119,8 @@ interface SettingsShape {
 	stripeWebhookSecret: string | null;
 	checkoutMode: CheckoutMode | null;
 	paymentProvider: string | null;
+	counterSalesEnabled: boolean | null;
+	counterIdleMinutes: number | null;
 	_secrets: Record<string, SecretMeta>;
 	/** Registered providers, Stripe first. Absent from older servers. */
 	_providers?: ProviderRow[];
@@ -397,6 +406,11 @@ export function SettingsPage() {
 							Only an admin can change payment settings.
 						</Alert>
 					)}
+					{group.id === "counter" && saved._canManagePayments === false && (
+						<Alert type="info" title="Admins only">
+							Only an admin can change counter sale settings.
+						</Alert>
+					)}
 					<GroupBody
 						group={group.id}
 						saved={saved}
@@ -407,7 +421,9 @@ export function SettingsPage() {
 						stripeActive={stripeActive}
 						setField={setField}
 						disabled={
-							saving || (isPaymentGroup(group.id) && saved._canManagePayments === false)
+							saving ||
+							((isPaymentGroup(group.id) || group.id === "counter") &&
+								saved._canManagePayments === false)
 						}
 					/>
 				</Card>
@@ -820,6 +836,45 @@ function GroupBody({
 						suffix="days"
 						disabled={disabled}
 						{...(errors.abandonedCartTokenTtlDays ? { invalid: true } : {})}
+					/>
+				</FormField>
+			</>
+		);
+	}
+
+	if (group === "counter") {
+		const counterOn = eff("counterSalesEnabled", saved, draft) === true;
+		return (
+			<>
+				<FormField
+					description="Adds Counter sale for editors and admins. Refunds stay admin-only."
+					error={errors.counterSalesEnabled}
+				>
+					<Toggle
+						label="Turn on counter sales"
+						checked={counterOn}
+						onChange={(v) => setField("counterSalesEnabled", v)}
+						disabled={disabled}
+					/>
+				</FormField>
+				{counterOn && saved.counterSalesEnabled === true && (
+					<p style={{ margin: "0 0 0.75rem" }}>
+						<a href="./counter">Open Counter sale</a>
+					</p>
+				)}
+				<FormField
+					label="Close the counter after (minutes without use)"
+					description="The Counter sale page clears the sale and closes after this long without use, so an unattended device can't sell under someone else's name. Default 15."
+					error={errors.counterIdleMinutes}
+				>
+					<NumberInput
+						value={eff("counterIdleMinutes", saved, draft) as number | null | undefined}
+						onChange={(v) => setField("counterIdleMinutes", v ?? null)}
+						min={1}
+						max={240}
+						suffix="minutes"
+						disabled={disabled}
+						{...(errors.counterIdleMinutes ? { invalid: true } : {})}
 					/>
 				</FormField>
 			</>

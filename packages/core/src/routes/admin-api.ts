@@ -189,6 +189,12 @@ function isPaymentSetting(key: string): boolean {
 	return PAYMENT_SETTINGS_KEYS.has(key) || providerCredentialSetting(key) !== undefined;
 }
 
+/** Turning counter sales on, and how soon the counter closes: admin-only. */
+const COUNTER_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
+	"counterSalesEnabled",
+	"counterIdleMinutes",
+]);
+
 // ────────────────────────────────────────────────────────────────────────────
 // Settings — GET/POST with secret masking (validation lives in settings/schema)
 // ────────────────────────────────────────────────────────────────────────────
@@ -2595,6 +2601,9 @@ export const adminApiRoutes = {
 				}
 				if (!isAdmin(routeCtx) && Object.keys(body).some(isPaymentSetting)) {
 					return adminOnly("Only an admin can change payment settings.");
+				}
+				if (!isAdmin(routeCtx) && Object.keys(body).some((k) => COUNTER_SETTINGS_KEYS.has(k))) {
+					return adminOnly("Only an admin can change counter sale settings.");
 				}
 				const currentEnabled = await ctx.kv.get<string[]>(
 					"settings:enabledCurrencies",

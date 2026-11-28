@@ -8,32 +8,42 @@
  *   GET  /admin/counter/status?draft=      pending | paid (order number) | failed
  *
  * Staff add products at the counter; the customer pays by a prompt on their
- * phone (M-PESA) or on a card terminal. The order is created through the same
- * path as an online order (stock, coupons, receipt email), from the signed
- * webhook or from the status check, whichever confirms first, marked
- * `channel: "in_person"` with the staff member in `soldBy`.
+ * phone (M-PESA), on a card terminal, or on the provider's own payment page
+ * opened on their phone ("Pay on their phone": a QR code or a shared link).
+ * The order is created through the same path as an online order (stock,
+ * coupons, receipt email), from the signed webhook or from the status check,
+ * whichever confirms first, marked `channel: "in_person"` with the staff
+ * member in `soldBy`.
  *
- * Editors and Admins may sell. Refunds stay admin-only (routes/admin-api.ts).
+ * Counter sales are off until an admin turns them on in Settings; until then
+ * every route here answers 404. Editors and Admins may sell. Refunds stay
+ * admin-only (routes/admin-api.ts).
  */
 
 import type { PluginContext, RouteContext } from "emdash";
 import { recalculate } from "../cart/calculate";
 import { holdStock, linkAttempts, releaseLock } from "../cart/lock";
 import { newCart } from "../cart/store";
+import { sendCounterPaymentLink } from "../emails/counter-link";
 import { WALK_IN_CUSTOMER_EMAIL, findOrderByPaymentIntent } from "../orders/create";
 import {
 	DEFAULT_PAYMENT_PROVIDER_ID,
 	getPaymentProvider,
 	isCurrencyNotSupportedError,
 	loadPaymentProviderCredentials,
+	type InPersonMethodType,
 	type PaymentProvider,
 	type PaymentProviderCredentials,
+	type PaymentProviderSplitAllocation,
 	type StartInPersonPaymentInput,
 } from "../payment-provider";
 import { normalizeProductFields } from "../products/normalize";
 import { resolvePrice } from "../products/pricing";
+import { DEFAULT_COUNTER_IDLE_MINUTES } from "../settings/schema";
 import type { Address, CartLineItem, CartState } from "../types";
 import { randomId } from "../util/ids";
+import { getPublicSiteUrl } from "../util/site-url";
+import { computeProviderSplit } from "../vendors/provider-split";
 import {
 	type CheckoutDraftSnapshot,
 	draftKey,
@@ -62,12 +72,25 @@ const DRAFT_ID_RE = /^[0-9a-f]{32}$/;
 
 type CounterMethod = StartInPersonPaymentInput["method"];
 
+/** Offered in this order; the first one available is the page's default. */
+const METHOD_ORDER: readonly InPersonMethodType[] = ["phone", "link", "terminal"];
+
+const METHOD_LABELS: Record<InPersonMethodType, string> = {
+	phone: "phone prompt",
+	terminal: "card terminal",
+	link: "Pay on their phone",
+};
+
 /** What the status route reports, kept in KV under `counter:<draftId>`. */
 export interface CounterSaleRecord {
 	orderDraftId: string;
 	providerId: string;
 	method: CounterMethod["type"];
 	paymentReference: string;
+	/** `link` only: the provider's payment page, shown while the sale waits. */
+	paymentUrl?: string;
+	/** `link` only: the link was emailed to the customer. */
+	linkEmailed?: boolean;
 	amount: number;
 	currency: string;
 	soldBy: string;
@@ -108,6 +131,16 @@ function seller(routeCtx: RouteContext): { id: string; email?: string } | null {
 	return { id: user.id, ...(typeof user.email === "string" ? { email: user.email } : {}) };
 }
 
+/** Counter sales stay off until an admin turns them on in Settings. */
+async function counterSalesOn(ctx: PluginContext): Promise<boolean> {
+	return (await ctx.kv.get<boolean>("settings:counterSalesEnabled")) === true;
+}
+
+/** While counter sales are off, the counter routes don't exist. */
+function notFound(): Response {
+	return json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404);
+}
+
 function notAllowed(): Response {
 	return json(
 		{
@@ -140,6 +173,16 @@ async function counterProvider(ctx: PluginContext): Promise<CounterProvider | st
 	const credentials = await loadPaymentProviderCredentials(ctx.kv, provider.id);
 	if (!credentials) return `Add your ${provider.label} keys in Settings first.`;
 	return { provider, credentials };
+}
+
+/** The provider's in-person methods that can take payment in this currency. */
+function methodsFor(provider: PaymentProvider, currency: string): InPersonMethodType[] {
+	const declared = provider.inPersonMethods ?? [];
+	return METHOD_ORDER.filter((method) => {
+		if (!declared.includes(method)) return false;
+		const only = provider.inPersonCurrencies?.[method];
+		return !only || only.includes(currency);
+	});
 }
 
 async function shopCurrency(ctx: PluginContext, requested: unknown): Promise<string> {
@@ -235,8 +278,10 @@ function parseSaleInput(raw: unknown): SaleInput | string {
 		if (typeof terminalId !== "string" || !TERMINAL_ID_RE.test(terminalId))
 			return "Choose a terminal.";
 		parsedMethod = { type: "terminal", terminalId };
+	} else if (method?.type === "link") {
+		parsedMethod = { type: "link" };
 	} else {
-		return "Choose how the customer pays: phone or terminal.";
+		return "Choose how the customer pays: phone prompt, card terminal or Pay on their phone.";
 	}
 
 	let customerEmail: string | undefined;
@@ -312,7 +357,7 @@ async function startSale(
 	if (typeof resolved === "string") return fail(resolved, 409);
 	const { provider, credentials } = resolved;
 	if (!(provider.inPersonMethods ?? []).includes(input.method.type)) {
-		return fail(`${provider.label} can't take payments by ${input.method.type}.`, 409);
+		return fail(`${provider.label} can't take payments by ${METHOD_LABELS[input.method.type]}.`, 409);
 	}
 	if (input.method.type === "terminal") {
 		const terminalId = input.method.terminalId;
@@ -346,10 +391,17 @@ async function startSale(
 	if (!provider.supportsCurrency(currency)) {
 		return fail(`${provider.label} can't take payments in ${currency}.`, 400);
 	}
+	if (!methodsFor(provider, currency).includes(input.method.type)) {
+		return fail(
+			`${provider.label} can't take ${currency} payments by ${METHOD_LABELS[input.method.type]}.`,
+			400,
+		);
+	}
 
-	// Products: published, sold in this currency, not a subscription and not
-	// a vendor's (counter sales don't split payments yet).
+	// Products: published, sold in this currency and not a subscription. A
+	// vendor's product needs a method that can split the payment.
 	if (!ctx.content) return fail("Products are unavailable.", 500);
+	const splitMethods = provider.inPersonSplitMethods ?? [];
 	const items: CartLineItem[] = [];
 	for (const line of input.lines) {
 		const record = await ctx.content.get("products", line.productId);
@@ -360,13 +412,20 @@ async function startSale(
 		if (fields.subscriptionConfig) {
 			return fail(`${fields.title} is a subscription; sell it online.`, 409);
 		}
-		if (fields.vendorId) {
-			return fail(`${fields.title} belongs to a vendor; sell it online.`, 409);
+		if (fields.vendorId && !splitMethods.includes(input.method.type)) {
+			const usable = splitMethods.filter((m) => methodsFor(provider, currency).includes(m));
+			return usable.length === 0
+				? fail(`${fields.title} belongs to a vendor; sell it online.`, 409)
+				: fail(
+						`${fields.title} belongs to a vendor; take payment by ${usable.map((m) => METHOD_LABELS[m]).join(" or ")}.`,
+						409,
+					);
 		}
 		items.push({
 			lineId: randomId(),
 			productId: line.productId,
 			...(line.variantId ? { variantId: line.variantId } : {}),
+			...(fields.vendorId ? { vendorId: fields.vendorId } : {}),
 			quantity: line.quantity,
 			unitPrice: { amount: 0, currency },
 			lineSubtotal: { amount: 0, currency },
@@ -405,6 +464,19 @@ async function startSale(
 	const cart = recalculate({ ...base, items: priced }, await readPricingPolicy(ctx));
 	if (cart.total.amount <= 0) return fail("The total must be more than zero.", 400);
 
+	// Vendors' shares, exactly as online checkout works them out.
+	let allocations: PaymentProviderSplitAllocation[] | undefined;
+	let platformRemainderMinor: number | undefined;
+	if (cart.items.some((item) => item.vendorId)) {
+		try {
+			const plan = await computeProviderSplit(ctx, cart, provider.id);
+			allocations = plan.allocations;
+			platformRemainderMinor = plan.platformRemainderMinor;
+		} catch (err) {
+			return fail(err instanceof Error ? err.message : "The vendor split couldn't be worked out.", 409);
+		}
+	}
+
 	const orderDraftId = randomId();
 	await holdStock(ctx, orderDraftId, sessionId, stockEntries, { ttlMs: HOLD_TTL_MS });
 	// If the earlier attempt is still paid late as well, its order is held
@@ -434,9 +506,24 @@ async function startSale(
 				currency,
 				customer: { email: payerEmail, ...(phone ? { phone } : {}) },
 				method: input.method,
+				...(allocations ? { allocations } : {}),
+				...(platformRemainderMinor !== undefined ? { platformRemainderMinor } : {}),
+				// The same draft metadata as online checkout.
+				metadata: {
+					orderDraftId,
+					sessionId,
+					siteUrl: ctx.site.url,
+					checkoutMode: "hosted",
+					kind: "payment",
+					channel: "in_person",
+				},
+				...(input.method.type === "link" ? linkReturnUrl(ctx, orderDraftId) : {}),
 			},
 			credentials,
 		);
+		if (input.method.type === "link" && !isPaymentPage(started.paymentUrl)) {
+			throw new Error("it returned no payment page");
+		}
 	} catch (err) {
 		await releaseLock(ctx, orderDraftId);
 		await ctx.kv.delete(draftKey(orderDraftId));
@@ -452,11 +539,30 @@ async function startSale(
 		return fail(`${provider.label} couldn't start the payment: ${message}`, 502);
 	}
 
+	// The link goes to the customer's email when staff entered one.
+	let linkEmailed: boolean | undefined;
+	if (
+		input.method.type === "link" &&
+		started.status === "pending" &&
+		started.paymentUrl &&
+		input.customerEmail
+	) {
+		linkEmailed = await sendCounterPaymentLink(ctx, {
+			to: input.customerEmail,
+			url: started.paymentUrl,
+			total: cart.total,
+		});
+	}
+
 	const record: CounterSaleRecord = {
 		orderDraftId,
 		providerId: provider.id,
 		method: input.method.type,
 		paymentReference: started.paymentReference,
+		...(input.method.type === "link" && started.paymentUrl
+			? { paymentUrl: started.paymentUrl }
+			: {}),
+		...(linkEmailed !== undefined ? { linkEmailed } : {}),
 		amount: cart.total.amount,
 		currency,
 		soldBy: staff.id,
@@ -481,6 +587,26 @@ async function startSale(
 	return json({ ...publicRecord(current), total: cart.total });
 }
 
+/** Where the provider's page sends the customer once they have paid. */
+function linkReturnUrl(ctx: PluginContext, orderDraftId: string): { returnUrl?: string } {
+	try {
+		return { returnUrl: `${getPublicSiteUrl(ctx)}/thank-you/${encodeURIComponent(orderDraftId)}` };
+	} catch {
+		// No public site URL: the provider shows its own confirmation.
+		return {};
+	}
+}
+
+/** Only an https page may become the QR code and the shared link. */
+function isPaymentPage(url: string | undefined): url is string {
+	if (!url || url.length > 2048) return false;
+	try {
+		return new URL(url).protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Status
 // ────────────────────────────────────────────────────────────────────────────
@@ -492,6 +618,10 @@ function publicRecord(record: CounterSaleRecord) {
 		method: record.method,
 		amount: record.amount,
 		currency: record.currency,
+		// The link "expires with the sale": shown only while it waits. A late
+		// payment through it still becomes the order (see checkStatus).
+		...(record.status === "pending" && record.paymentUrl ? { paymentUrl: record.paymentUrl } : {}),
+		...(record.linkEmailed !== undefined ? { linkEmailed: record.linkEmailed } : {}),
 		...(record.failure ? { failure: record.failure } : {}),
 		...(record.reason ? { reason: record.reason } : {}),
 		...(record.orderId ? { orderId: record.orderId } : {}),
@@ -599,7 +729,9 @@ async function checkStatus(
 		return order ? markPaid(ctx, record, order) : record;
 	}
 	if (settled) return record;
-	if (live.status === "failed") {
+	// On the provider's page a customer whose card is declined can try
+	// another card or channel, so a link sale waits until it times out.
+	if (live.status === "failed" && record.method !== "link") {
 		return settleFailed(ctx, record, "declined", live.reason);
 	}
 	return timedOut(record) ? settleFailed(ctx, record, "timed_out") : record;
@@ -613,14 +745,29 @@ function timedOut(record: CounterSaleRecord): boolean {
 // Setup + products
 // ────────────────────────────────────────────────────────────────────────────
 
+async function idleMinutes(ctx: PluginContext): Promise<number> {
+	const value = await ctx.kv.get<number>("settings:counterIdleMinutes");
+	return typeof value === "number" && Number.isInteger(value) && value >= 1
+		? value
+		: DEFAULT_COUNTER_IDLE_MINUTES;
+}
+
 async function setup(ctx: PluginContext): Promise<Response> {
 	const currency = await shopCurrency(ctx, undefined);
+	const common = { currency, idleMinutes: await idleMinutes(ctx), shopName: ctx.site.name ?? "" };
 	const resolved = await counterProvider(ctx);
 	if (typeof resolved === "string") {
-		return json({ available: false, message: resolved, currency, methods: [], terminals: [] });
+		return json({
+			available: false,
+			message: resolved,
+			...common,
+			methods: [],
+			splitMethods: [],
+			terminals: [],
+		});
 	}
 	const { provider, credentials } = resolved;
-	const methods = [...(provider.inPersonMethods ?? [])];
+	const methods = methodsFor(provider, currency);
 	let terminals: Array<{ id: string; name: string }> = [];
 	let terminalMessage: string | undefined;
 	if (methods.includes("terminal") && provider.listTerminals) {
@@ -630,13 +777,16 @@ async function setup(ctx: PluginContext): Promise<Response> {
 			terminalMessage = `Couldn't list your terminals: ${err instanceof Error ? err.message : String(err)}`;
 		}
 	}
+	// Terminals are offered only when the provider lists some.
+	const offered = methods.filter((m) => m !== "terminal" || terminals.length > 0);
 	return json({
 		available: true,
 		providerId: provider.id,
 		providerLabel: provider.label,
-		currency,
-		// Terminals are offered only when the provider lists some.
-		methods: methods.filter((m) => m !== "terminal" || terminals.length > 0),
+		...common,
+		methods: offered,
+		// What a sale with a vendor's product may use.
+		splitMethods: offered.filter((m) => (provider.inPersonSplitMethods ?? []).includes(m)),
 		terminals,
 		...(terminalMessage ? { terminalMessage } : {}),
 	});
@@ -647,6 +797,13 @@ async function listProducts(ctx: PluginContext, req: Request): Promise<Response>
 	const url = new URL(req.url);
 	const q = (url.searchParams.get("q") ?? "").trim().toLowerCase().slice(0, 100);
 	const currency = await shopCurrency(ctx, url.searchParams.get("currency"));
+	// Vendors' products only when a method can split the payment.
+	const resolved = await counterProvider(ctx);
+	const vendorsSellable =
+		typeof resolved !== "string" &&
+		methodsFor(resolved.provider, currency).some((m) =>
+			(resolved.provider.inPersonSplitMethods ?? []).includes(m),
+		);
 	// Scans at most 200 products, like the low-stock widget.
 	const result = await ctx.content.list("products", { limit: 200 });
 	const items = [];
@@ -659,7 +816,7 @@ async function listProducts(ctx: PluginContext, req: Request): Promise<Response>
 		}
 		const fields = normalizeProductFields(row.data as Record<string, unknown>);
 		if (q && !fields.title.toLowerCase().includes(q)) continue;
-		if (fields.subscriptionConfig || fields.vendorId) continue;
+		if (fields.subscriptionConfig || (fields.vendorId && !vendorsSellable)) continue;
 		const price = resolvePrice({ product: fields, variant: null, currency });
 		if (!price) continue;
 		items.push({
@@ -667,6 +824,7 @@ async function listProducts(ctx: PluginContext, req: Request): Promise<Response>
 			title: fields.title,
 			price: price.unit,
 			stockQuantity: fields.manageStock ? fields.stockQuantity : null,
+			...(fields.vendorId ? { vendor: true } : {}),
 		});
 		if (items.length >= 50) break;
 	}
@@ -676,27 +834,34 @@ async function listProducts(ctx: PluginContext, req: Request): Promise<Response>
 export const counterRoutes = {
 	"admin/counter/setup": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await counterSalesOn(ctx))) return notFound();
 			if (!seller(routeCtx)) return notAllowed();
-			return setup(getCtx(routeCtx, _c));
+			return setup(ctx);
 		},
 	},
 	"admin/counter/products": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await counterSalesOn(ctx))) return notFound();
 			if (!seller(routeCtx)) return notAllowed();
-			return listProducts(getCtx(routeCtx, _c), routeCtx.request);
+			return listProducts(ctx, routeCtx.request);
 		},
 	},
 	"admin/counter/sale": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
+			const ctx = getCtx(routeCtx, _c);
+			if (!(await counterSalesOn(ctx))) return notFound();
 			const staff = seller(routeCtx);
 			if (!staff) return notAllowed();
-			return startSale(getCtx(routeCtx, _c), routeCtx, staff);
+			return startSale(ctx, routeCtx, staff);
 		},
 	},
 	"admin/counter/status": {
 		handler: async (routeCtx: RouteContext, _c?: PluginContext) => {
-			if (!seller(routeCtx)) return notAllowed();
 			const ctx = getCtx(routeCtx, _c);
+			if (!(await counterSalesOn(ctx))) return notFound();
+			if (!seller(routeCtx)) return notAllowed();
 			const draft = new URL(routeCtx.request.url).searchParams.get("draft") ?? "";
 			if (!DRAFT_ID_RE.test(draft)) return fail("Missing or invalid draft id", 400);
 			const record = await ctx.kv.get<CounterSaleRecord>(counterKey(draft));

@@ -108,9 +108,10 @@ export function dashcommerce(options: DashCommerceOptions = {}): PluginDescripto
 		componentsEntry: "@dashcommerce/core/astro",
 		// Only list routes that make sense in the EmDash sidebar. Detail screens
 		// (/orders/:id, etc.) stay in admin/entry.tsx for in-app navigation only.
+		// Counter sale (/counter) is off by default, and the sidebar can't hide
+		// an entry at runtime, so it is reached from Orders and Settings once on.
 		adminPages: [
 			{ path: "/orders", label: "Orders", icon: "shopping-bag" },
-			{ path: "/counter", label: "Counter sale", icon: "credit-card" },
 			{ path: "/customers", label: "Customers", icon: "users" },
 			{ path: "/coupons", label: "Coupons", icon: "tag" },
 			{ path: "/shipping", label: "Shipping", icon: "truck" },
