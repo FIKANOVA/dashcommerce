@@ -445,10 +445,24 @@ export interface CouponUsage {
 // Shipping
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Where a zone delivers. With neither `regions` nor `postcodes` it covers
+ * the whole country; with both, an address must match one of each.
+ */
+export interface ShippingZoneLocation {
+	country: CountryCode;
+	regions?: RegionCode[];
+	/**
+	 * Postcode prefixes (`00100`, `SW1`) or same-length digit ranges
+	 * (`1000-1999`), stored without case or spaces. See `shipping/postcodes`.
+	 */
+	postcodes?: string[];
+}
+
 export interface ShippingZone {
 	id: string;
 	name: string;
-	locations: Array<{ country: CountryCode; regions?: RegionCode[] }>;
+	locations: ShippingZoneLocation[];
 	order: number;
 	createdAt: IsoDateTime;
 	updatedAt: IsoDateTime;

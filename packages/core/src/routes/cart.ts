@@ -8,7 +8,7 @@
  *   POST   /cart/coupon                  — apply { code }
  *   DELETE /cart/coupon/remove?code={code} — remove
  *   POST   /cart/shipping-location       — minimal ship-to {country, region?, postalCode?} (hosted checkout)
- *   GET    /cart/shipping-regions        — regions the shipping zones name, by country (hosted checkout)
+ *   GET    /cart/shipping-regions        — regions the shipping zones name, and countries they list postcodes for (hosted checkout)
  *   POST   /cart/shipping-address        — full address → recalc tax (embedded checkout)
  *   POST   /cart/shipping-methods        — list available rates for current ship-to
  *   POST   /cart/shipping-method         — set method id
@@ -38,7 +38,8 @@ import { verifyRestoreToken } from "../abandoned-cart/recover";
 import { resolveDiscount, validateCoupon } from "../coupons/validate";
 import { refreshAppliedCoupons } from "../coupons/refresh";
 import { calculateRates } from "../shipping/calculate";
-import { checkedRegion, pickZone, zoneRegions } from "../shipping/calculate";
+import { checkedRegion, pickZone, zonePostcodeCountries, zoneRegions } from "../shipping/calculate";
+import { isPlausiblePostcode, POSTCODE_MAX_LENGTH } from "../shipping/postcodes";
 import { regionLabel, regionName } from "../data/regions";
 import type {
 	CartLineItem,
@@ -98,6 +99,19 @@ async function readZones(ctx: PluginContext): Promise<ShippingZone[]> {
 		}
 	).shipping_zones;
 	return (await zonesStore.query({ limit: 200 })).items.map((r) => ({ ...r.data, id: r.id }));
+}
+
+/**
+ * Why a postcode sent to a cart route is refused, or null when it is fine:
+ * absent, or short text of letters, digits, spaces and hyphens.
+ */
+function postcodeError(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string") return "postalCode must be text";
+	if (!isPlausiblePostcode(value.trim())) {
+		return `postalCode must be up to ${POSTCODE_MAX_LENGTH} letters, digits, spaces or hyphens`;
+	}
+	return null;
 }
 
 /** The address with its region checked against the zones (see `checkedRegion`). */
@@ -416,6 +430,8 @@ export const cartRoutes = {
 		handler: async (routeCtx: RouteContext, ctx: PluginContext) => {
 			const body = routeCtx.input as { address?: CartState["shippingAddress"] };
 			if (!body.address) return errorResponse("address required", 400);
+			const badPostcode = postcodeError(body.address.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const shippingAddress = withCheckedRegion(body.address, await readZones(ctx));
@@ -443,6 +459,10 @@ export const cartRoutes = {
 				shippingAddress?: CartState["shippingAddress"];
 				notes?: string;
 			};
+			const badPostcode =
+				postcodeError(body.shippingAddress?.postalCode) ??
+				postcodeError(body.billingAddress?.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
 			const { sessionId, setCookie } = resolveSessionId(routeCtx.request);
 			const cart = await getOrCreate(ctx, sessionId, await defaultCurrency(ctx));
 			const next: CartState = { ...cart };
@@ -625,9 +645,11 @@ export const cartRoutes = {
 	 * (name/line1/city/region) will be populated post-redirect from
 	 * `checkout.session.completed`.
 	 *
-	 * The postcode is optional: shipping zones match on country and
-	 * region only, and many addresses have no postcode. It is kept when
-	 * given, for tax rates that match on postcode prefixes.
+	 * The postcode is optional, as many addresses have none. It is kept
+	 * when given, for zones and tax rates that match on postcodes; an
+	 * address without one matches only zones that don't list postcodes.
+	 * Hosted checkout asks for it in the countries where a zone lists
+	 * postcodes (see `cart/shipping-regions`).
 	 *
 	 * The region is the ISO 3166-2 subdivision part (`30` for Nairobi City,
 	 * `KE-30`), asked for only when a zone names regions in the country
@@ -648,13 +670,15 @@ export const cartRoutes = {
 			const body = (routeCtx.input ?? {}) as {
 				country?: string;
 				region?: unknown;
-				postalCode?: string;
+				postalCode?: unknown;
 			};
 			const country = body.country?.trim().toUpperCase();
-			const postalCode = body.postalCode?.trim() ?? "";
 			if (!country || country.length !== 2) {
 				return errorResponse("country (ISO-2) required", 400);
 			}
+			const badPostcode = postcodeError(body.postalCode);
+			if (badPostcode) return errorResponse(badPostcode, 400);
+			const postalCode = typeof body.postalCode === "string" ? body.postalCode.trim() : "";
 			if (
 				body.region !== undefined &&
 				(typeof body.region !== "string" || body.region.trim().length > 64)
@@ -695,9 +719,11 @@ export const cartRoutes = {
 	/**
 	 * The regions the shipping zones name, by country, with their names:
 	 * `{ countries: { KE: { label: "County", regions: [{ code: "30",
-	 * name: "Nairobi City" }] } } }`. Hosted checkout asks for a region only
-	 * for a country listed here, so shops without regional zones see no
-	 * change.
+	 * name: "Nairobi City" }] } }, postcodes: ["PT"] }`. Hosted checkout
+	 * asks for a region only for a country listed in `countries`, and
+	 * requires the postcode only for one listed in `postcodes` (the
+	 * countries where a zone lists postcodes), so shops without regional
+	 * or postcode zones see no change.
 	 */
 	"cart/shipping-regions": {
 		public: true,
@@ -724,7 +750,7 @@ export const cartRoutes = {
 						.sort((a, b) => a.name.localeCompare(b.name)),
 				};
 			}
-			return jsonResponse({ countries });
+			return jsonResponse({ countries, postcodes: zonePostcodeCountries(zones) });
 		},
 	},
 

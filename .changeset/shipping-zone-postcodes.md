@@ -1,0 +1,5 @@
+---
+"@dashcommerce/core": minor
+---
+
+Let shipping zones list postcodes, so a shop can charge a city rate anywhere (Lisbon's 1000–1999 in Portugal, Nairobi's 00100 in Kenya). A zone location takes a new optional `postcodes`: prefixes (`00100`, `SW1`, `SW1*`) or same-length digit ranges (`1000-1999`), compared without case or spaces like table tax rates. A location with postcodes matches only an address whose postcode matches one of them; among matching zones with the same order, a postcode match now beats a region match, which beats a country-wide zone. `cart/shipping-regions` also lists the countries where a zone lists postcodes, and `HostedCheckoutForm` requires the postcode there only, and re-quotes when it changes. `cart/shipping-location`, `cart/shipping-address` and `cart/contact` refuse a postcode that is not short text (up to 16 letters, digits, spaces or hyphens) with a 400. The admin zone editor has a Postcodes field per country, the admin route normalises entries and refuses malformed ones, and zone cards show them. Zones without postcodes behave as before.
