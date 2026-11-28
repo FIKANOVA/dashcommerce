@@ -3,10 +3,13 @@
  * Hosted checkout form — redirects to Stripe Checkout.
  *
  * Flow, server-side of Stripe:
- *   1. Customer picks ship-to country (+ postal code, if they have one,
- *      and the region, when a shipping zone names regions in that country).
- *      The postal code is required where a zone lists postcodes in that
- *      country, and changing it re-quotes shipping.
+ *   1. Customer picks the ship-to country by name, from the countries the
+ *      shop's zones cover. The form then asks for the region when a zone
+ *      names regions in that country, the area (town or estate) when a
+ *      zone lists areas there, and offers an optional postcode where a zone
+ *      lists postcodes. The postcode never blocks: without one the shopper
+ *      gets the country, region or area rates, pickup included. Changing
+ *      any of them once rates show re-quotes shipping.
  *   2. Storefront fetches `cart/shipping-methods` and shows radio options.
  *   3. Customer picks a method; storefront calls `cart/shipping-method`.
  *   4. Customer clicks "Pay with Stripe" → `checkout/create-session`
@@ -54,6 +57,15 @@ const {
   defaultCountry,
 } = Astro.props;
 const isStripe = providerId === "stripe";
+const startCountry = defaultCountry ?? "US";
+/** The start country's name, so the dropdown reads well before the list loads. */
+const startCountryName = (() => {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(startCountry) ?? startCountry;
+  } catch {
+    return startCountry;
+  }
+})();
 const payHint = onPage
   ? `${providerLabel} opens over this page to take payment. We never see your card or mobile money details.`
   : isStripe
@@ -75,22 +87,27 @@ const payHint = onPage
         <span class="hc-step-num">1</span>
         <h2 class="hc-step-title">Where does this ship to?</h2>
       </div>
-      <p class="hc-step-hint">Enter your country, and your postal code if you have one — we'll show available shipping options. {collectsDetails ? `${providerLabel} collects your full address on the next page.` : "You'll add your full address before paying."}</p>
+      <p class="hc-step-hint">Choose your country and we'll show the shipping options. {collectsDetails ? `${providerLabel} collects your full address on the next page.` : "You'll add your full address before paying."}</p>
 
       <form id="hc-location-form" class="hc-form">
-        <div class="hc-row-2">
-          <label class="hc-label">
-            <span>Country <small>(ISO-2)</small></span>
-            <input required id="hc-country" value={defaultCountry ?? "US"} maxlength="2" autocomplete="shipping country" />
-          </label>
-          <label class="hc-label">
-            <span>Postal code <small id="hc-postal-hint">(optional)</small></span>
-            <input id="hc-postal" autocomplete="shipping postal-code" />
-          </label>
-        </div>
+        <label class="hc-label">
+          <span>Country</span>
+          <select required id="hc-country-select" autocomplete="shipping country">
+            <option value={startCountry} selected>{startCountryName}</option>
+          </select>
+        </label>
+        <input type="hidden" id="hc-country" value={defaultCountry ?? "US"} />
         <label class="hc-label" id="hc-region-field" hidden>
           <span id="hc-region-label">Region</span>
           <select id="hc-region" autocomplete="shipping address-level1"></select>
+        </label>
+        <label class="hc-label" id="hc-area-field" hidden>
+          <span>Area</span>
+          <select id="hc-area" autocomplete="shipping address-level2"></select>
+        </label>
+        <label class="hc-label" id="hc-postal-field" hidden>
+          <span>Postcode <small id="hc-postal-hint">(for local rates)</small></span>
+          <input id="hc-postal" autocomplete="shipping postal-code" maxlength="16" />
         </label>
         <p id="hc-location-error" class="hc-error" role="alert"></p>
         <button id="hc-location-submit" type="submit" class="btn-secondary hc-submit">
@@ -150,7 +167,7 @@ const payHint = onPage
             </label>
             <label class="hc-label">
               <span>Town or city</span>
-              <input required id="hc-city" autocomplete="shipping address-level2" />
+              <input required id="hc-city" autocomplete="shipping address-level2" maxlength="80" />
             </label>
           </div>
           <div class="hc-digital-only">
@@ -202,6 +219,10 @@ const payHint = onPage
 
   .hc-form { display: grid; gap: 1rem; max-width: 30rem; }
   .hc-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .875rem; }
+  @media (max-width: 400px) {
+    .hc-row-2 { grid-template-columns: 1fr; }
+  }
+  .hc-label select { width: 100%; min-width: 0; }
   .hc-fieldset {
     border: 0;
     padding: 0;
@@ -289,6 +310,7 @@ const payHint = onPage
 
 <script>
   import type { OnPageCheckoutClient } from "../../payment-provider/types";
+  import { format as formatMinor } from "../../money";
   type Money = { amount: number; currency: string };
   type CartState = {
     sessionId: string;
@@ -384,6 +406,7 @@ const payHint = onPage
         email: fieldValue("hc-email"),
         billingAddress: address,
         ...(delivered ? { shippingAddress: address } : {}),
+        ...(delivered && chosenArea() ? { area: chosenArea() } : {}),
       }),
     });
     if (!res.ok) throw new Error(`Could not save your details (${res.status})`);
@@ -487,45 +510,93 @@ const payHint = onPage
 
   // --- 1. Ship-to location form -------------------------------------------
   //
-  // When a shipping zone names regions in the chosen country (Nairobi City
-  // in Kenya, say), ask which one, with "Elsewhere" for the rest of the
-  // country. `cart/shipping-regions` lists them; shops without regional
-  // zones list none, and the region field stays hidden.
+  // The country is a dropdown of the countries the zones cover, named in
+  // the shopper's language; the hidden `hc-country` keeps its ISO-2 code,
+  // which is what the server gets. When a shipping zone names regions in
+  // the chosen country (Nairobi City in Kenya, say), ask which one, with
+  // "Elsewhere" for the rest of the country. When zones list areas there
+  // (Westlands), ask for the area, with "Somewhere else" falling through to
+  // the region or country rate. `cart/shipping-regions` lists all of them;
+  // shops without regional zones list none, and the fields stay hidden.
   type RegionChoices = Record<string, { label: string; regions: Array<{ code: string; name: string }> }>;
+  type AreaChoices = Record<string, { country: string[]; regions: Record<string, string[]> }>;
   const ELSEWHERE = "elsewhere";
+  /** Not an area name: a merchant's area can't be empty after trimming. */
+  const SOMEWHERE_ELSE = "";
   const countryInput = document.getElementById("hc-country") as HTMLInputElement | null;
+  const countrySelect = document.getElementById("hc-country-select") as HTMLSelectElement | null;
   const regionField = document.getElementById("hc-region-field");
   const regionLabel = document.getElementById("hc-region-label");
   const regionSelect = document.getElementById("hc-region") as HTMLSelectElement | null;
+  const areaField = document.getElementById("hc-area-field");
+  const areaSelect = document.getElementById("hc-area") as HTMLSelectElement | null;
+  const postalField = document.getElementById("hc-postal-field");
   const postalInput = document.getElementById("hc-postal") as HTMLInputElement | null;
-  const postalHint = document.getElementById("hc-postal-hint");
   let regionChoices: RegionChoices = {};
-  /** Countries where a zone lists postcodes: the postcode sets the rate there. */
+  let areaChoices: AreaChoices = {};
+  /** Countries where a zone lists postcodes: a postcode can get a local rate there. */
   let postcodeCountries: string[] = [];
 
-  /** Require the postcode only in countries where a zone lists postcodes. */
+  function currentCountry(): string {
+    return countryInput?.value.trim().toUpperCase() ?? "";
+  }
+
+  /**
+   * Fill the country dropdown with the countries the shop ships to, named
+   * in the shopper's language and sorted by name. Values stay ISO-2.
+   */
+  function showCountries(codes: string[]) {
+    if (!countrySelect || codes.length === 0) return;
+    let names: Intl.DisplayNames | null = null;
+    try {
+      names = new Intl.DisplayNames([...navigator.languages, "en"], { type: "region" });
+    } catch {
+      /* no DisplayNames: show the codes */
+    }
+    const named = codes
+      .map((code) => ({ code, name: names?.of(code) ?? code }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const current = currentCountry();
+    countrySelect.replaceChildren();
+    if (!codes.includes(current)) {
+      const prompt = new Option("Choose your country", "", true, true);
+      prompt.disabled = true;
+      countrySelect.add(prompt);
+      if (countryInput) countryInput.value = "";
+    }
+    for (const c of named) countrySelect.add(new Option(c.name, c.code, false, c.code === current));
+  }
+
+  /**
+   * Offer the postcode only in countries where a zone lists postcodes, and
+   * never require it: without one the shopper gets the wider rates.
+   */
   function showPostcodeRule() {
-    if (!postalInput) return;
-    const country = countryInput?.value.trim().toUpperCase() ?? "";
-    const required = postcodeCountries.includes(country);
-    postalInput.required = required;
-    if (postalHint) postalHint.textContent = required ? "(required)" : "(optional)";
+    if (!postalInput || !postalField) return;
+    const offered = postcodeCountries.includes(currentCountry());
+    postalField.hidden = !offered;
+    postalInput.required = false;
+    if (!offered) postalInput.value = "";
   }
 
   function showRegions() {
     showPostcodeRule();
     if (!regionField || !regionSelect) return;
-    const country = countryInput?.value.trim().toUpperCase() ?? "";
+    const country = currentCountry();
     const choice = regionChoices[country];
     regionField.hidden = !choice;
     regionSelect.required = Boolean(choice);
     // Rebuild only when the country's options change. A country with no
     // options yet (the regions list may still be loading) is not remembered,
     // so the options are built once the list arrives.
-    if (choice && regionSelect.dataset.country === country) return;
+    if (choice && regionSelect.dataset.country === country) {
+      showAreas();
+      return;
+    }
     regionSelect.replaceChildren();
     if (!choice) {
       delete regionSelect.dataset.country;
+      showAreas();
       return;
     }
     regionSelect.dataset.country = country;
@@ -535,6 +606,7 @@ const payHint = onPage
     regionSelect.add(prompt);
     for (const r of choice.regions) regionSelect.add(new Option(r.name, r.code));
     regionSelect.add(new Option("Elsewhere", ELSEWHERE));
+    showAreas();
   }
 
   /** The chosen region code, "" for elsewhere, or undefined when not asked. */
@@ -543,15 +615,81 @@ const payHint = onPage
     return regionSelect.value === ELSEWHERE ? "" : regionSelect.value;
   }
 
+  /**
+   * The areas for the chosen country and region: the region's own, then
+   * the country-wide ones. Names come from the merchant, so they go in as
+   * option text, never as markup.
+   */
+  function areasHere(): string[] {
+    const choice = areaChoices[currentCountry()];
+    if (!choice) return [];
+    const region = chosenRegion();
+    const list = [...(region ? (choice.regions[region] ?? []) : []), ...choice.country];
+    const seen = new Set<string>();
+    return list.filter((a) => {
+      const key = a.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function showAreas() {
+    if (!areaField || !areaSelect) return;
+    const areas = areasHere();
+    const key = `${currentCountry()}|${chosenRegion() ?? ""}`;
+    areaField.hidden = areas.length === 0;
+    areaSelect.required = areas.length > 0;
+    if (areaSelect.dataset.key === key) return;
+    const previous = areaSelect.value;
+    areaSelect.dataset.key = key;
+    areaSelect.replaceChildren();
+    if (areas.length === 0) return;
+    const prompt = new Option("Choose your area", "", true, true);
+    prompt.disabled = true;
+    areaSelect.add(prompt);
+    for (const a of areas) areaSelect.add(new Option(a, a, false, a === previous));
+    areaSelect.add(new Option("Somewhere else", ELSEWHERE));
+  }
+
+  /** The chosen area, "" for somewhere else or when not asked. */
+  function chosenArea(): string {
+    if (!areaSelect || !areaField || areaField.hidden) return SOMEWHERE_ELSE;
+    return areaSelect.value === ELSEWHERE ? SOMEWHERE_ELSE : areaSelect.value;
+  }
+
+  /** Pre-fill the address step's town or city from the area, unless the shopper typed one. */
+  function prefillCity() {
+    const city = document.getElementById("hc-city") as HTMLInputElement | null;
+    if (!city) return;
+    const area = chosenArea();
+    if (city.value.trim() === "" || city.dataset.fromArea === "1") {
+      city.value = area;
+      city.dataset.fromArea = area ? "1" : "";
+    }
+  }
+
   if (!digitalOnly && locForm) {
-    countryInput?.addEventListener("input", showRegions);
+    countrySelect?.addEventListener("change", () => {
+      if (countryInput) countryInput.value = countrySelect?.value ?? "";
+      showRegions();
+    });
+    regionSelect?.addEventListener("change", showAreas);
+    areaSelect?.addEventListener("change", prefillCity);
     (async () => {
       try {
         const res = await fetch(`${API}/cart/shipping-regions`, { credentials: "include" });
         if (!res.ok) return;
-        const body = (await res.json()) as { countries?: RegionChoices; postcodes?: string[] };
+        const body = (await res.json()) as {
+          countries?: RegionChoices;
+          postcodes?: string[];
+          shipsTo?: string[];
+          areas?: AreaChoices;
+        };
         regionChoices = body.countries ?? {};
         postcodeCountries = body.postcodes ?? [];
+        areaChoices = body.areas ?? {};
+        showCountries(body.shipsTo ?? []);
         showRegions();
       } catch {
         /* network error → no region field; rates match on the country */
@@ -569,11 +707,21 @@ const payHint = onPage
       if (payStep) payStep.dataset.ready = "0";
       locForm.requestSubmit();
     });
+    // So does a changed country, region or area.
+    for (const select of [countrySelect, regionSelect, areaSelect]) {
+      select?.addEventListener("change", () => {
+        if (!methStep || methStep.hidden || !locForm.checkValidity()) return;
+        methStep.hidden = true;
+        if (payBtn) payBtn.disabled = true;
+        if (payStep) payStep.dataset.ready = "0";
+        locForm.requestSubmit();
+      });
+    }
   }
 
-  // Sends a minimal `{country, region?, postalCode}` to
-  // `cart/shipping-location`; the postcode may be empty, and the region is
-  // sent only when asked for.
+  // Sends a minimal `{country, region?, postalCode, area}` to
+  // `cart/shipping-location`; the postcode and area may be empty, and the
+  // region is sent only when asked for.
   // That writes a placeholder shipping address on the server cart so
   // that `cart/shipping-methods` can compute rates. Stripe will collect
   // the full address (line1, city, region) after we redirect.
@@ -586,13 +734,15 @@ const payHint = onPage
       const country = (document.getElementById("hc-country") as HTMLInputElement).value.trim().toUpperCase();
       const postalCode = (document.getElementById("hc-postal") as HTMLInputElement).value.trim();
       const region = chosenRegion();
+      const area = chosenArea();
+      prefillCity();
 
       try {
         const locRes = await fetch(`${API}/cart/shipping-location`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ country, postalCode, ...(region === undefined ? {} : { region }) }),
+          body: JSON.stringify({ country, postalCode, area, ...(region === undefined ? {} : { region }) }),
         });
         if (!locRes.ok) {
           throw new Error(await errorMessage(locRes, "Couldn't save your location. Please try again."));
@@ -619,27 +769,35 @@ const payHint = onPage
   }
 
   // --- 2. Render shipping-method radios -----------------------------------
+  /** Minor units to a price, so ¥500 (amount 500, no minor unit) reads ¥500. */
   function formatMoney(m: Money): string {
-    try {
-      return new Intl.NumberFormat(undefined, { style: "currency", currency: m.currency }).format(m.amount / 100);
-    } catch {
-      return `${(m.amount / 100).toFixed(2)} ${m.currency}`;
-    }
+    return formatMinor(m, navigator.language);
   }
+  /** One radio per option. Labels are the merchant's text: textContent only. */
   function renderMethods(options: ShippingOption[]) {
     if (!methList) return;
-    methList.innerHTML = "";
+    methList.replaceChildren();
     options.forEach((opt, i) => {
       const label = document.createElement("label");
       label.className = "hc-method-option" + (i === 0 ? " is-selected" : "");
-      label.innerHTML = `
-        <input type="radio" name="hc-method" value="${opt.methodId}"${i === 0 ? " checked" : ""} />
-        <div class="hc-method-name">
-          ${opt.label}
-          ${opt.deliveryEstimate ? `<div class="hc-method-delivery">${fmtEstimate(opt.deliveryEstimate)}</div>` : ""}
-        </div>
-        <div class="hc-method-price">${formatMoney(opt.amount)}</div>
-      `;
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "hc-method";
+      radio.value = opt.methodId;
+      radio.checked = i === 0;
+      const name = document.createElement("div");
+      name.className = "hc-method-name";
+      name.textContent = opt.label;
+      if (opt.deliveryEstimate) {
+        const delivery = document.createElement("div");
+        delivery.className = "hc-method-delivery";
+        delivery.textContent = fmtEstimate(opt.deliveryEstimate);
+        name.append(delivery);
+      }
+      const price = document.createElement("div");
+      price.className = "hc-method-price";
+      price.textContent = formatMoney(opt.amount);
+      label.append(radio, name, price);
       methList.appendChild(label);
     });
     methList.querySelectorAll<HTMLInputElement>('input[name="hc-method"]').forEach((input) => {
