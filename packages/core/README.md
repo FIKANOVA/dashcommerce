@@ -126,8 +126,8 @@ DELETE /cart/clear                        Empty cart (keeps session)
 POST   /cart/currency                     Switch currency (empty cart only)
 POST   /cart/coupon                       Apply coupon
 DELETE /cart/coupon/remove?code={code}    Remove coupon
-POST   /cart/shipping-location            Set country + region + postal (hosted checkout pre-flight)
-GET    /cart/shipping-regions             Regions the shipping zones name, by country, and postcode countries
+POST   /cart/shipping-location            Set country + region + postal + area (hosted checkout pre-flight)
+GET    /cart/shipping-regions             Countries, regions and areas the shipping zones name, and postcode countries
 POST   /cart/shipping-address             Full address (embedded checkout)
 POST   /cart/contact                      Email + billing address
 POST   /cart/shipping-methods             List rates for current ship-to
@@ -155,19 +155,25 @@ A shopper's new checkout attempt replaces their earlier one, so it can't be paid
 
 ### Shipping zones
 
-A zone lists the places it delivers to, and its methods give the rates. Each location is a country, optionally narrowed to some of its regions, some of its postcodes, or both:
+A zone lists the places it delivers to, and its methods give the rates. Each location is a country, optionally narrowed to some of its regions, postcodes or delivery areas:
 
 ```json
 { "name": "Lisbon", "locations": [{ "country": "PT", "postcodes": ["1000-1999", "2600"] }] }
+{ "name": "Westlands", "locations": [{ "country": "KE", "regions": ["30"], "areas": ["Westlands", "Kilimani"] }] }
 ```
 
-- A location with neither regions nor postcodes covers the whole country.
+- A location with no regions, postcodes or areas covers the whole country. With more than one, an address must match all of them.
 - A postcode entry is a prefix (`00100`, `SW1`, or `SW1*`) or an inclusive range of digits with ends of the same length (`1000-1999`). A range compares the postcode's first digits, as many as its ends have, so `1100-148` falls in `1000-1999`. A hyphen between digit groups of different lengths is part of a postcode, not a range: `1000-001` is matched as a prefix.
 - Postcodes compare without case or spaces, like table tax rates: `sw1a 1aa` matches `SW1`. The admin route stores entries that way and refuses a malformed entry or a range that starts after it ends with a 400.
-- A location with postcodes matches only an address whose postcode matches one entry, and its region too when it lists both. An address without a postcode gets the zone that covers the rest of the country.
-- Zones are tried by `order`, lowest first. Among matching zones with the same order, a postcode match beats a region match, which beats a country-wide zone, so a "Lisbon" zone works next to a "Portugal" zone on the default order.
+- An outward code followed by a space (`SW1 `, `EC1A `, `M5V `) matches that outward code only: `SW1 ` takes SW1 postcodes but not `SW10 1AA`, which the plain prefix `SW1` would. It is stored with its trailing space. A postcode typed without a space has its last three characters taken as the inward code.
+- An area is a town, district or estate the shop delivers to (`Westlands`, `Lekki`, `Dubai Marina`), for places where people don't use postcodes. It matches the address's `city` without case, accents or extra spaces. The admin route trims and de-duplicates areas and refuses one over 80 characters, with markup or control characters, or more than 200 per location.
+- A location with postcodes matches only an address whose postcode matches one entry; one with areas only an address in one of them. An address without a postcode or area gets the zone that covers the rest of its region or country.
+- Zones are tried by `order`, lowest first. Among matching zones with the same order, an area match beats a postcode match, which beats a region match, which beats a country-wide zone, so a "Westlands" zone works next to "Nairobi" and "Kenya" zones on the default order.
+- Local pickup is offered from every zone that covers the address, not only the one that sets the delivery rate. Put the pickup method on the zone its pickup point serves, usually the country or county, and shoppers there see it whatever area or postcode they give.
 
-`cart/shipping-regions` also returns `postcodes`, the countries where a zone lists postcodes. Hosted checkout requires the postcode for those countries only, and fetches the rates again when the shopper changes it; elsewhere the postcode stays optional. `cart/shipping-location`, `cart/shipping-address` and `cart/contact` refuse a postcode longer than 16 characters or with anything but letters, digits, spaces and hyphens. `checkout/create-session` and `checkout/create-intent` re-quote shipping with the same matching before taking payment.
+`cart/shipping-regions` also returns `postcodes`, the countries where a zone lists postcodes; `shipsTo`, the countries the zones cover (every country when no zone lists one); and `areas`, the areas by country, with those on locations that name regions listed by region. Hosted checkout shows the country as a dropdown of `shipsTo`, named in the shopper's language and sent as ISO-2; offers the postcode, labelled "for local rates", only in the postcode countries and never requires it, so a shopper who only wants pickup is never blocked; and shows an Area dropdown, with "Somewhere else" for the wider rate, where zones list areas. It fetches the rates again when any of these change. Its address inputs carry the standard `autocomplete` tokens, so browsers fill them from saved addresses.
+
+`cart/shipping-location`, `cart/shipping-address` and `cart/contact` take an optional `area`, stored as the address's `city`, and refuse one that isn't plain text of at most 80 characters with a 400. Areas never affect tax. `cart/shipping-location`, `cart/shipping-address` and `cart/contact` refuse a postcode longer than 16 characters or with anything but letters, digits, spaces and hyphens. `checkout/create-session` and `checkout/create-intent` re-quote shipping with the same matching before taking payment.
 
 ### Admin-gated routes
 
@@ -186,6 +192,7 @@ GET    /admin/reports/revenue             Range-sliced revenue with comparison
 GET    /admin/reports/top-products        Best sellers by qty or revenue
 GET    /admin/reports/top-customers       Lifetime-value leaderboard
 GET    /admin/reports/mrr                 Active subscription MRR by currency
+POST   /admin/shipping/check          "Check an address": zone, reason and rates per currency (read-only)
 … plus coupons, vendors, shipping zones/methods, tax rates, subscriptions, reviews moderation, menu, customer-portal-session
 ```
 
