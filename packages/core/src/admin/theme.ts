@@ -89,6 +89,9 @@ export const T = {
 	onFill: "#fff",
 	/** A solid neutral fill under white text (e.g. a provider's letter tile). */
 	neutralFill: "#475569",
+	/** A QR code's modules and quiet zone: dark on light in either mode, so phones read it. */
+	qrDark: "#000",
+	qrLight: "#fff",
 
 	info,
 	success,

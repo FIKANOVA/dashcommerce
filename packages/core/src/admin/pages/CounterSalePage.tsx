@@ -143,10 +143,10 @@ export function PaymentQr({ url }: { url: string }) {
 			aria-label="QR code for the payment link"
 			viewBox={`0 0 ${drawn.side} ${drawn.side}`}
 			shapeRendering="crispEdges"
-			style={{ width: "100%", maxWidth: 280, height: "auto", display: "block", background: "#fff" }}
+			style={{ width: "100%", maxWidth: 280, height: "auto", display: "block", background: T.qrLight }}
 		>
-			<rect width={drawn.side} height={drawn.side} fill="#fff" />
-			<path d={drawn.path} fill="#000" />
+			<rect width={drawn.side} height={drawn.side} fill={T.qrLight} />
+			<path d={drawn.path} fill={T.qrDark} />
 		</svg>
 	);
 }
