@@ -91,6 +91,12 @@ export interface CounterSaleRecord {
 	paymentUrl?: string;
 	/** `link` only: the link was emailed to the customer. */
 	linkEmailed?: boolean;
+	/**
+	 * The vendor shares core sent with the payment, so an order the status
+	 * check creates carries the split as a webhook-created one does.
+	 */
+	allocations?: PaymentProviderSplitAllocation[];
+	platformRemainderMinor?: number;
 	amount: number;
 	currency: string;
 	soldBy: string;
@@ -563,6 +569,8 @@ async function startSale(
 			? { paymentUrl: started.paymentUrl }
 			: {}),
 		...(linkEmailed !== undefined ? { linkEmailed } : {}),
+		...(allocations ? { allocations } : {}),
+		...(platformRemainderMinor !== undefined ? { platformRemainderMinor } : {}),
 		amount: cart.total.amount,
 		currency,
 		soldBy: staff.id,
@@ -714,6 +722,7 @@ async function checkStatus(
 				amount: live.amount ?? record.amount,
 				currency: live.currency ?? record.currency,
 				customer: { email: "" },
+				...splitSettlementFor(record, live),
 				raw: null,
 			});
 		} catch (err) {
@@ -735,6 +744,33 @@ async function checkStatus(
 		return settleFailed(ctx, record, "declined", live.reason);
 	}
 	return timedOut(record) ? settleFailed(ctx, record, "timed_out") : record;
+}
+
+/**
+ * The split to record on an order the status check creates: what the
+ * provider reports it settled, or else the shares core sent with the
+ * payment, so the order matches one the webhook would have created.
+ */
+function splitSettlementFor(
+	record: CounterSaleRecord,
+	live: Awaited<ReturnType<NonNullable<PaymentProvider["getPaymentStatus"]>>>,
+): { splitSettlement?: NonNullable<typeof live.splitSettlement> } {
+	if (live.splitSettlement && live.splitSettlement.allocations.length > 0) {
+		return { splitSettlement: live.splitSettlement };
+	}
+	if (!record.allocations || record.allocations.length === 0) return {};
+	return {
+		splitSettlement: {
+			allocations: record.allocations.map((a) => ({
+				accountReference: a.accountReference,
+				amountMinor: a.amountMinor,
+			})),
+			...(record.platformRemainderMinor !== undefined
+				? { platformRemainderMinor: record.platformRemainderMinor }
+				: {}),
+			currency: record.currency,
+		},
+	};
 }
 
 function timedOut(record: CounterSaleRecord): boolean {

@@ -457,6 +457,12 @@ export interface PaymentStatusResult {
 	reason?: string;
 	/** Present when the payment is a subscription charge. */
 	subscription?: ProviderSubscriptionInfo;
+	/**
+	 * What the provider settled to each party of a split payment, when its
+	 * status lookup reports it (same shape as on `charge.succeeded`). Core
+	 * records it on an order the status check creates.
+	 */
+	splitSettlement?: Extract<NormalizedPaymentEvent, { type: "charge.succeeded" }>["splitSettlement"];
 }
 
 /** A bank or mobile-money provider in a country, for payout onboarding. */

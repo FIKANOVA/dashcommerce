@@ -453,6 +453,47 @@ describe("vendor products at the counter", () => {
 		expect(started[0]?.platformRemainderMinor).toBe(170_000);
 	});
 
+	it("records the vendor's share on the order when the status check creates it first", async () => {
+		const { ctx, getCol, setLive } = shop({ splitMethods: ["link"] });
+		const res = await call(ctx, "admin/counter/sale", EDITOR_USER, { input: VENDOR_SALE });
+		const draft = String(res.body.orderDraftId);
+		// The provider reports no settlement: the shares core sent are recorded.
+		setLive({ status: "succeeded", amount: 260_000, currency: "KES" });
+		expect((await status(ctx, draft)).body.status).toBe("paid");
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.providerSplits).toMatchObject({
+			providerId: "mock",
+			allocations: [
+				{ vendorId: "v1", accountReference: "ACCT_v1", amount: { amount: 90_000, currency: "KES" } },
+			],
+			platformRemainder: { amount: 170_000, currency: "KES" },
+		});
+	});
+
+	it("prefers the settlement the provider reports when the status check creates the order", async () => {
+		const { ctx, getCol, setLive } = shop({ splitMethods: ["link"] });
+		const res = await call(ctx, "admin/counter/sale", EDITOR_USER, { input: VENDOR_SALE });
+		const draft = String(res.body.orderDraftId);
+		setLive({
+			status: "succeeded",
+			amount: 260_000,
+			currency: "KES",
+			splitSettlement: {
+				allocations: [{ accountReference: "ACCT_v1", amountMinor: 90_000 }],
+				platformRemainderMinor: 166_100,
+				providerFeeMinor: 3_900,
+				currency: "KES",
+			},
+		});
+		await status(ctx, draft);
+		const order = Array.from(getCol("orders").values())[0] as Order;
+		expect(order.providerSplits).toMatchObject({
+			allocations: [{ vendorId: "v1", amount: { amount: 90_000, currency: "KES" } }],
+			platformRemainder: { amount: 166_100, currency: "KES" },
+			providerFee: { amount: 3_900, currency: "KES" },
+		});
+	});
+
 	it("offers only the methods that split, and refuses the others", async () => {
 		const { ctx, started } = shop({ splitMethods: ["link"] });
 		const setup = await call(ctx, "admin/counter/setup", EDITOR_USER, { method: "GET" });
