@@ -81,6 +81,31 @@ export function matchZone(
 	return best && reason ? { zone: best, reason } : null;
 }
 
+/**
+ * The enabled methods an address is offered: those of the zone it matches
+ * (see `matchZone`), then the local pickup methods of any other zone that
+ * covers it, so pickup set on a country-wide zone stays on offer when a
+ * town or postcode zone sets the delivery rate. Storage may hold `enabled`
+ * as 1.
+ */
+export function methodsForAddress(
+	address: Address,
+	zones: ShippingZone[],
+	methods: ShippingMethod[],
+): { zone: ShippingZone; reason: ZoneMatchReason; methods: ShippingMethod[] } | null {
+	const match = matchZone(address, zones);
+	if (!match) return null;
+	const enabled = (m: ShippingMethod) => m.enabled === true || (m.enabled as unknown) === 1;
+	const own = methods.filter((m) => m.zoneId === match.zone.id && enabled(m));
+	const otherZones = new Set(
+		zones.filter((z) => z.id !== match.zone.id && matchesZone(address, z)).map((z) => z.id),
+	);
+	const pickups = methods.filter(
+		(m) => otherZones.has(m.zoneId) && enabled(m) && m.config.type === "local_pickup",
+	);
+	return { ...match, methods: [...own, ...pickups] };
+}
+
 /** The zone checkout uses for the address (see `matchZone`). */
 export function pickZone(
 	address: Address,

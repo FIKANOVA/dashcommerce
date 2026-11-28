@@ -37,7 +37,7 @@ import { sendReviewRequest } from "../emails";
 import { normalizeProductFields } from "../products/normalize";
 import { isPlausiblePostcode, parsePostcodeEntry, POSTCODE_MAX_ENTRIES } from "../shipping/postcodes";
 import { areaError, parseAreaList, tidyArea } from "../shipping/areas";
-import { calculateRates, checkedRegion, matchZone } from "../shipping/calculate";
+import { calculateRates, checkedRegion, methodsForAddress } from "../shipping/calculate";
 import { recomputeSummary } from "../reviews/moderate";
 import { moderateReview } from "../reviews/moderate";
 import { cancel, pause, resume } from "../subscriptions/lifecycle";
@@ -736,14 +736,15 @@ async function checkShippingAddress(
 		postalCode,
 		country,
 	};
-	const match = matchZone(address, zones);
+	const match = methodsForAddress(
+		address,
+		zones,
+		(await storeOf<ShippingMethod>(ctx, "shipping_methods").query({ limit: 500 })).items.map(
+			(r) => ({ ...(r.data as ShippingMethod), id: r.id }),
+		),
+	);
 	if (!match) return json({ address, zone: null, reason: null, currencies: [] });
-
-	const methods = (
-		await storeOf<ShippingMethod>(ctx, "shipping_methods").query({ limit: 500 })
-	).items
-		.map((r) => ({ ...(r.data as ShippingMethod), id: r.id }))
-		.filter((m) => m.zoneId === match.zone.id && (m.enabled === true || (m.enabled as unknown) === 1));
+	const methods = match.methods;
 	const currencies = new Set<string>(
 		normalizeCurrencyList((await ctx.kv.get<unknown>("settings:enabledCurrencies")) ?? []),
 	);
